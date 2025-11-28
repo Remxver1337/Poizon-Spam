@@ -166,6 +166,15 @@ class DatabaseManager:
         conn.close()
         return users
 
+    def get_total_users_count(self, chat_id: int) -> int:
+        """Получение общего количества пользователей в чате"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM users WHERE chat_id = ?', (chat_id,))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+
     def get_random_variation(self) -> Tuple[int, str]:
         """Получение случайной вариации сообщения"""
         conn = sqlite3.connect(self.db_name)
@@ -511,6 +520,15 @@ class SpamBot:
         
         elif data == "spam_back":
             await self.show_spam_menu(update, context)
+        
+        elif data == "spam_goto":
+            self.user_states[user_id] = "waiting_for_page_number"
+            context.user_data['current_chat_id'] = chat_id
+            await query.answer("📝 Введите номер страницы")
+            await query.edit_message_text(
+                "📄 *Введите номер страницы для перехода:*",
+                parse_mode='Markdown'
+            )
 
     async def show_users_for_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, page: int = 0):
         """Показать пользователей чата для рассылки"""
@@ -519,7 +537,8 @@ class SpamBot:
         db = DatabaseManager(user_id)
         
         users = db.get_users_by_chat(chat_id, page * 25, 25)
-        total_users = len(db.get_users_by_chat(chat_id, 0, 1000))
+        total_users = db.get_total_users_count(chat_id)
+        total_pages = (total_users + 24) // 25
         
         if not users:
             await query.answer("❌ В этом чате нет пользователей!")
@@ -534,31 +553,38 @@ class SpamBot:
         
         users_text = (
             f"👥 *Чат: {chat_name}*\n"
-            f"📄 *Страница: {page + 1}*\n\n"
-            f"💡 *Нажмите на кнопку с пользователем для отправки сообщения:*\n\n"
-            f"✅ *Доступно для отправки: {len(users)} пользователей*"
+            f"📄 *Страница: {page + 1} из {total_pages}*\n"
+            f"👤 *Всего пользователей: {total_users}*\n\n"
+            f"💡 *Нажмите на кнопку с пользователем для отправки сообщения:*"
         )
         
         keyboard = []
-        for user_id_db, username in users:
+        # Добавляем нумерованные кнопки пользователей
+        for index, (user_id_db, username) in enumerate(users):
+            user_number = page * 25 + index + 1  # Номер пользователя (начинается с 1)
             variation_id, variation_text = db.get_random_variation()
             if variation_text:
                 spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
                 keyboard.append([InlineKeyboardButton(
-                    f"📨 {username}", 
+                    f"{user_number}. 📨 {username}", 
                     callback_data=f"spam_user_{chat_id}_{user_id_db}_{page}",
                     url=spam_link
                 )])
             else:
                 keyboard.append([InlineKeyboardButton(
-                    f"❌ {username} (нет вариаций)", 
+                    f"{user_number}. ❌ {username} (нет вариаций)", 
                     callback_data="no_action"
                 )])
         
+        # Навигационные кнопки
         nav_buttons = []
         if page > 0:
             nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"spam_page_{chat_id}_{page-1}"))
-        if (page + 1) * 25 < total_users:
+        
+        # Кнопка для ввода номера страницы
+        nav_buttons.append(InlineKeyboardButton("🔢 Перейти", callback_data="spam_goto"))
+        
+        if page < total_pages - 1:
             nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"spam_page_{chat_id}_{page+1}"))
         
         if nav_buttons:
@@ -685,6 +711,107 @@ class SpamBot:
                     "💡 *Отправьте список username'ов в столбик*"
                 )
                 await update.message.reply_text(error_text, parse_mode='Markdown')
+        
+        elif state == "waiting_for_page_number":
+            try:
+                page_number = int(text.strip())
+                if page_number < 1:
+                    raise ValueError
+                
+                chat_id = context.user_data.get('current_chat_id')
+                if not chat_id:
+                    await update.message.reply_text("❌ Ошибка: не найден ID чата")
+                    return
+                
+                db = DatabaseManager(user_id)
+                total_users = db.get_total_users_count(chat_id)
+                total_pages = (total_users + 24) // 25
+                
+                if page_number > total_pages:
+                    await update.message.reply_text(
+                        f"❌ *Страница {page_number} не существует*\n"
+                        f"📄 *Всего страниц: {total_pages}*",
+                        parse_mode='Markdown'
+                    )
+                    return
+                
+                del self.user_states[user_id]
+                if 'current_chat_id' in context.user_data:
+                    del context.user_data['current_chat_id']
+                
+                # Показываем выбранную страницу
+                await self.show_users_for_spam_from_message(update, context, chat_id, page_number - 1)
+                
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ *Неверный формат номера страницы*\n\n"
+                    "💡 *Введите целое число больше 0*",
+                    parse_mode='Markdown'
+                )
+
+    async def show_users_for_spam_from_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, page: int):
+        """Показать пользователей чата для рассылки из текстового сообщения"""
+        user_id = update.message.from_user.id
+        db = DatabaseManager(user_id)
+        
+        users = db.get_users_by_chat(chat_id, page * 25, 25)
+        total_users = db.get_total_users_count(chat_id)
+        total_pages = (total_users + 24) // 25
+        
+        if not users:
+            await update.message.reply_text("❌ В этом чате нет пользователей!")
+            return
+        
+        chat_name = "Неизвестный чат"
+        chats = db.get_chats()
+        for cid, name in chats:
+            if cid == chat_id:
+                chat_name = name
+                break
+        
+        users_text = (
+            f"👥 *Чат: {chat_name}*\n"
+            f"📄 *Страница: {page + 1} из {total_pages}*\n"
+            f"👤 *Всего пользователей: {total_users}*\n\n"
+            f"💡 *Нажмите на кнопку с пользователем для отправки сообщения:*"
+        )
+        
+        keyboard = []
+        # Добавляем нумерованные кнопки пользователей
+        for index, (user_id_db, username) in enumerate(users):
+            user_number = page * 25 + index + 1  # Номер пользователя (начинается с 1)
+            variation_id, variation_text = db.get_random_variation()
+            if variation_text:
+                spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
+                keyboard.append([InlineKeyboardButton(
+                    f"{user_number}. 📨 {username}", 
+                    callback_data=f"spam_user_{chat_id}_{user_id_db}_{page}",
+                    url=spam_link
+                )])
+            else:
+                keyboard.append([InlineKeyboardButton(
+                    f"{user_number}. ❌ {username} (нет вариаций)", 
+                    callback_data="no_action"
+                )])
+        
+        # Навигационные кнопки
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"spam_page_{chat_id}_{page-1}"))
+        
+        # Кнопка для ввода номера страницы
+        nav_buttons.append(InlineKeyboardButton("🔢 Перейти", callback_data="spam_goto"))
+        
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"spam_page_{chat_id}_{page+1}"))
+        
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад к чатам", callback_data="main_spam")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(users_text, reply_markup=reply_markup, parse_mode='Markdown')
 
     async def show_main_menu_from_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать главное меню из текстового сообщения"""
