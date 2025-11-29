@@ -31,7 +31,6 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         
-        # Таблица для исходных сообщений
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +39,6 @@ class DatabaseManager:
             )
         ''')
         
-        # Таблица для вариаций сообщений
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS variations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +49,6 @@ class DatabaseManager:
             )
         ''')
         
-        # Таблица для чатов
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS chats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,7 +56,6 @@ class DatabaseManager:
             )
         ''')
         
-        # Таблица для пользователей
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,32 +162,6 @@ class DatabaseManager:
         conn.close()
         return users
 
-    def get_random_variation(self) -> Tuple[int, str]:
-        """Получение случайной вариации сообщения"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, variation_text FROM variations 
-            WHERE send_count < 5 
-            ORDER BY RANDOM() 
-            LIMIT 1
-        ''')
-        result = cursor.fetchone()
-        
-        if result:
-            variation_id, variation_text = result
-            cursor.execute(
-                'UPDATE variations SET send_count = send_count + 1 WHERE id = ?',
-                (variation_id,)
-            )
-            cursor.execute('DELETE FROM variations WHERE send_count >= 5')
-            conn.commit()
-            conn.close()
-            return variation_id, variation_text
-        
-        conn.close()
-        return None, None
-
 class SpamBot:
     def __init__(self, token: str):
         self.application = Application.builder().token(token).build()
@@ -212,12 +182,12 @@ class SpamBot:
         user_id = update.effective_user.id
         
         welcome_text = (
-            "🌟 *Добро пожаловать!* 🌟\n\n"
-            "💬 *Для начала работы используйте кнопки ниже:*\n\n"
-            "📝 *Создание сообщений* - создайте и управляйте вариациями сообщений\n"
-            "👥 *Мои пользователи* - добавьте списки пользователей для рассылки\n"
-            "🚀 *Начать спам* - запустите рассылку сообщений\n\n"
-            "💡 *Бот готов к работе! Выберите раздел:*"
+            "🌟 Добро пожаловать! 🌟\n\n"
+            "💬 Для начала работы используйте кнопки ниже:\n\n"
+            "📝 Создание сообщений - создайте и управляйте вариациями сообщений\n"
+            "👥 Мои пользователи - добавьте списки пользователей для рассылки\n"
+            "🚀 Начать спам - запустите рассылку сообщений\n\n"
+            "💡 Бот готов к работе! Выберите раздел:"
         )
         
         keyboard = [
@@ -227,17 +197,14 @@ class SpamBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
     async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать главное меню"""
         query = update.callback_query
         await query.answer()
         
-        menu_text = (
-            "🎯 *Главное меню*\n\n"
-            "💡 *Выберите нужный раздел:*"
-        )
+        menu_text = "🎯 Главное меню\n\n💡 Выберите нужный раздел:"
         
         keyboard = [
             [InlineKeyboardButton("📝 Создание сообщений", callback_data="main_messages")],
@@ -246,7 +213,7 @@ class SpamBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(menu_text, reply_markup=reply_markup)
 
     async def handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик кнопок главного меню"""
@@ -269,11 +236,11 @@ class SpamBot:
         await query.answer()
         
         menu_text = (
-            "📝 *Создание сообщений*\n\n"
-            "✨ *Доступные действия:*\n"
+            "📝 Создание сообщений\n\n"
+            "✨ Доступные действия:\n"
             "• 📄 Создать новое сообщение с вариациями\n"
             "• 🗑️ Удалить существующее сообщение\n\n"
-            "💡 *Выберите действие:*"
+            "💡 Выберите действие:"
         )
         
         keyboard = [
@@ -283,7 +250,7 @@ class SpamBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(menu_text, reply_markup=reply_markup)
 
     async def handle_messages(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик кнопок раздела сообщений"""
@@ -294,11 +261,11 @@ class SpamBot:
         if data == "messages_create":
             self.user_states[user_id] = "waiting_for_message"
             create_text = (
-                "🆕 *Создание нового сообщения*\n\n"
-                "📨 *Введите исходное сообщение для создания вариаций:*\n\n"
-                "💡 *Бот автоматически создаст вариации*"
+                "🆕 Создание нового сообщения\n\n"
+                "📨 Введите исходное сообщение для создания вариаций:\n\n"
+                "💡 Бот автоматически создаст вариации"
             )
-            await query.edit_message_text(create_text, parse_mode='Markdown')
+            await query.edit_message_text(create_text)
         
         elif data == "messages_delete":
             await self.show_message_list(update, context)
@@ -322,18 +289,18 @@ class SpamBot:
         
         if not messages:
             no_messages_text = (
-                "📭 *У вас нет созданных сообщений*\n\n"
-                "💡 *Создайте первое сообщение для работы*"
+                "📭 У вас нет созданных сообщений\n\n"
+                "💡 Создайте первое сообщение для работы"
             )
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="messages_back")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(no_messages_text, reply_markup=reply_markup, parse_mode='Markdown')
+            await query.edit_message_text(no_messages_text, reply_markup=reply_markup)
             return
         
         list_text = (
-            "🗑️ *Удаление сообщений*\n\n"
-            "📋 *Выберите сообщение для удаления:*\n\n"
-            "⚠️ *Внимание: будут удалены ВСЕ вариации этого сообщения*"
+            "🗑️ Удаление сообщений\n\n"
+            "📋 Выберите сообщение для удаления:\n\n"
+            "⚠️ Внимание: будут удалены ВСЕ вариации этого сообщения"
         )
         
         keyboard = []
@@ -344,10 +311,10 @@ class SpamBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="messages_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(list_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(list_text, reply_markup=reply_markup)
 
     def generate_variations(self, text: str, count: int = 500) -> List[str]:
-        """Генерация вариаций сообщения без лимита времени"""
+        """Генерация вариаций сообщения"""
         variations = set()
         chars_to_replace = list(REPLACEMENTS.keys())
         
@@ -378,11 +345,11 @@ class SpamBot:
         await query.answer()
         
         menu_text = (
-            "👥 *Мои пользователи*\n\n"
-            "✨ *Доступные действия:*\n"
+            "👥 Мои пользователи\n\n"
+            "✨ Доступные действия:\n"
             "• ➕ Добавить новых пользователей\n"
             "• 🗑️ Удалить список пользователей\n\n"
-            "💡 *Выберите действие:*"
+            "💡 Выберите действие:"
         )
         
         keyboard = [
@@ -392,7 +359,7 @@ class SpamBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(menu_text, reply_markup=reply_markup)
 
     async def handle_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик кнопок раздела пользователей"""
@@ -403,11 +370,11 @@ class SpamBot:
         if data == "users_add":
             self.user_states[user_id] = "waiting_for_chat_name"
             add_text = (
-                "➕ *Добавление пользователей*\n\n"
-                "🏷️ *Напишите название чата из которого взяли пользователей:*\n\n"
-                "💡 *Пример: Основной чат, Резервный список*"
+                "➕ Добавление пользователей\n\n"
+                "🏷️ Напишите название чата из которого взяли пользователей:\n\n"
+                "💡 Пример: Основной чат, Резервный список"
             )
-            await query.edit_message_text(add_text, parse_mode='Markdown')
+            await query.edit_message_text(add_text)
         
         elif data == "users_delete":
             await self.show_chat_list(update, context)
@@ -431,18 +398,18 @@ class SpamBot:
         
         if not chats:
             no_chats_text = (
-                "📭 *У вас нет добавленных чатов*\n\n"
-                "💡 *Добавьте первый чат с пользователями*"
+                "📭 У вас нет добавленных чатов\n\n"
+                "💡 Добавьте первый чат с пользователями"
             )
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="users_back")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(no_chats_text, reply_markup=reply_markup, parse_mode='Markdown')
+            await query.edit_message_text(no_chats_text, reply_markup=reply_markup)
             return
         
         list_text = (
-            "🗑️ *Удаление чатов*\n\n"
-            "📋 *Выберите чат для удаления:*\n\n"
-            "⚠️ *Внимание: будут удалены ВСЕ пользователи этого чата*"
+            "🗑️ Удаление чатов\n\n"
+            "📋 Выберите чат для удаления:\n\n"
+            "⚠️ Внимание: будут удалены ВСЕ пользователи этого чата"
         )
         
         keyboard = []
@@ -452,7 +419,7 @@ class SpamBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="users_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(list_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(list_text, reply_markup=reply_markup)
 
     # РАЗДЕЛ НАЧАТЬ СПАМ
     async def show_spam_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -464,18 +431,18 @@ class SpamBot:
         
         if not chats:
             no_chats_text = (
-                "📭 *У вас нет добавленных чатов*\n\n"
-                "💡 *Сначала добавьте пользователей в разделе \"👥 Мои пользователи\"*"
+                "📭 У вас нет добавленных чатов\n\n"
+                "💡 Сначала добавьте пользователей в разделе \"👥 Мои пользователи\""
             )
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_back")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(no_chats_text, reply_markup=reply_markup, parse_mode='Markdown')
+            await query.edit_message_text(no_chats_text, reply_markup=reply_markup)
             return
         
         menu_text = (
-            "🚀 *Начать рассылку*\n\n"
-            "📋 *Выберите чат для рассылки:*\n\n"
-            "💡 *После выбора чата откроется список пользователей с кликабельными ссылками*"
+            "🚀 Начать рассылку\n\n"
+            "📋 Выберите чат для рассылки:\n\n"
+            "💡 После выбора чата откроется список пользователей со ссылками"
         )
         
         keyboard = []
@@ -485,7 +452,7 @@ class SpamBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="main_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(menu_text, reply_markup=reply_markup)
 
     async def handle_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик кнопок раздела рассылки"""
@@ -513,7 +480,7 @@ class SpamBot:
             await query.answer(f"Ошибка: {str(e)}")
 
     async def show_users_for_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, page: int = 0):
-        """Упрощенная и надежная версия показа пользователей"""
+        """Показать пользователей чата со ссылками - БЕЗ MARKDOWN"""
         query = update.callback_query
         user_id = query.from_user.id
         
@@ -521,7 +488,7 @@ class SpamBot:
         
         try:
             db = DatabaseManager(user_id)
-            users = db.get_users_by_chat(chat_id, page * 20, 20)
+            users = db.get_users_by_chat(chat_id, page * 10, 10)  # Уменьшил до 10 на страницу
             
             if not users:
                 keyboard = [[InlineKeyboardButton("🔙 Назад к чатам", callback_data="main_spam")]]
@@ -541,30 +508,29 @@ class SpamBot:
             # Фиксированный текст для всех
             message_text = "привет, тебе нужна скидка на пойзон? я в пойзон феникс выйграл в гиве (бесплатная доставка и скидка 25% на заказ) я бесплатно отдаю если что, в чате бейби мело увидел тебя"
             
-            # Формируем сообщение со ссылками
-            text = f"👥 *Чат: {chat_name}*\n"
-            text += f"📄 *Страница: {page + 1}*\n\n"
-            text += "🔗 *Кликабельные ссылки:*\n\n"
+            # Формируем сообщение БЕЗ Markdown - просто текст со ссылками
+            text = f"👥 Чат: {chat_name}\n"
+            text += f"📄 Страница: {page + 1}\n\n"
+            text += "🔗 Ссылки для рассылки:\n\n"
             
             for i, (user_id_db, username) in enumerate(users, 1):
                 link = f"https://t.me/{username}?text={quote(message_text)}"
-                text += f"{i}. 👤 [{username}]({link})\n"
+                text += f"{i}. 👤 {username}\n"
+                text += f"🔗 {link}\n\n"
             
             total_users = len(db.get_users_by_chat(chat_id, 0, 1000))
-            text += f"\n📊 *Пользователей: {len(users)} из {total_users}*\n\n"
-            text += "💡 *Нажимайте на имена для отправки*"
+            text += f"📊 Пользователей: {len(users)} из {total_users}\n\n"
+            text += "💡 Копируйте ссылки и отправляйте пользователям"
             
             # Создаем кнопки навигации
             keyboard = []
             
-            # Кнопки влево/вправо
+            # Кнопки навигации
             nav_buttons = []
             if page > 0:
                 nav_buttons.append(InlineKeyboardButton("◀️ Пред", callback_data=f"spam_page_{chat_id}_{page-1}"))
             
-            nav_buttons.append(InlineKeyboardButton(f"{page + 1}", callback_data="no_action"))
-            
-            if (page + 1) * 20 < total_users:
+            if (page + 1) * 10 < total_users:
                 nav_buttons.append(InlineKeyboardButton("След ▶️", callback_data=f"spam_page_{chat_id}_{page+1}"))
             
             if nav_buttons:
@@ -573,10 +539,10 @@ class SpamBot:
             keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data=f"spam_chat_{chat_id}_{page}")])
             keyboard.append([InlineKeyboardButton("🔙 Назад к чатам", callback_data="main_spam")])
             
+            # Отправляем БЕЗ parse_mode='Markdown'
             await query.edit_message_text(
                 text,
                 reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown',
                 disable_web_page_preview=True
             )
             
@@ -592,18 +558,15 @@ class SpamBot:
         text = update.message.text
         
         if user_id not in self.user_states:
-            help_text = (
-                "💡 *Используйте кнопки меню для навигации*\n\n"
-                "🔍 *Если вы потерялись, нажмите /start*"
-            )
-            await update.message.reply_text(help_text, parse_mode='Markdown')
+            help_text = "💡 Используйте кнопки меню для навигации\n\n🔍 Если вы потерялись, нажмите /start"
+            await update.message.reply_text(help_text)
             return
         
         state = self.user_states[user_id]
         db = DatabaseManager(user_id)
         
         if state == "waiting_for_message":
-            await update.message.reply_text("⏳ *Генерирую вариации...*", parse_mode='Markdown')
+            await update.message.reply_text("⏳ Генерирую вариации...")
             
             variations = self.generate_variations(text, 500)
             message_id = db.add_message(text)
@@ -612,13 +575,13 @@ class SpamBot:
             del self.user_states[user_id]
             
             success_text = (
-                f"✅ *Успешно создано!*\n\n"
-                f"📊 *Создано вариаций:* {len(variations)}\n"
-                f"💬 *Исходное сообщение:* {text}\n\n"
-                f"💡 *Теперь вы можете начать рассылку*"
+                f"✅ Успешно создано!\n\n"
+                f"📊 Создано вариаций: {len(variations)}\n"
+                f"💬 Исходное сообщение: {text}\n\n"
+                f"💡 Теперь вы можете начать рассылку"
             )
             
-            await update.message.reply_text(success_text, parse_mode='Markdown')
+            await update.message.reply_text(success_text)
             await self.show_main_menu_from_message(update, context)
         
         elif state == "waiting_for_chat_name":
@@ -626,12 +589,12 @@ class SpamBot:
             self.user_states[user_id] = "waiting_for_users"
             
             users_text = (
-                f"🏷️ *Название чата сохранено:* {text}\n\n"
-                f"📝 *Отправьте список пользователей в столбик:*\n\n"
-                f"💡 *Каждый username с новой строки*"
+                f"🏷️ Название чата сохранено: {text}\n\n"
+                f"📝 Отправьте список пользователей в столбик:\n\n"
+                f"💡 Каждый username с новой строки"
             )
             
-            await update.message.reply_text(users_text, parse_mode='Markdown')
+            await update.message.reply_text(users_text)
         
         elif state == "waiting_for_users":
             chat_name = context.user_data.get('current_chat_name')
@@ -652,27 +615,24 @@ class SpamBot:
                     del context.user_data['current_chat_name']
                 
                 success_text = (
-                    f"✅ *Пользователи добавлены!*\n\n"
-                    f"🏷️ *Чат:* {chat_name}\n"
-                    f"👥 *Добавлено пользователей:* {len(cleaned_usernames)}\n\n"
-                    f"💡 *Теперь вы можете начать рассылку*"
+                    f"✅ Пользователи добавлены!\n\n"
+                    f"🏷️ Чат: {chat_name}\n"
+                    f"👥 Добавлено пользователей: {len(cleaned_usernames)}\n\n"
+                    f"💡 Теперь вы можете начать рассылку"
                 )
                 
-                await update.message.reply_text(success_text, parse_mode='Markdown')
+                await update.message.reply_text(success_text)
                 await self.show_main_menu_from_message(update, context)
             else:
                 error_text = (
-                    "❌ *Список пользователей пуст*\n\n"
-                    "💡 *Отправьте список username'ов в столбик*"
+                    "❌ Список пользователей пуст\n\n"
+                    "💡 Отправьте список username'ов в столбик"
                 )
-                await update.message.reply_text(error_text, parse_mode='Markdown')
+                await update.message.reply_text(error_text)
 
     async def show_main_menu_from_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать главное меню из текстового сообщения"""
-        menu_text = (
-            "🎯 *Главное меню*\n\n"
-            "💡 *Выберите нужный раздел:*"
-        )
+        menu_text = "🎯 Главное меню\n\n💡 Выберите нужный раздел:"
         
         keyboard = [
             [InlineKeyboardButton("📝 Создание сообщений", callback_data="main_messages")],
@@ -681,7 +641,7 @@ class SpamBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(menu_text, reply_markup=reply_markup)
 
     def run(self):
         """Запуск бота"""
