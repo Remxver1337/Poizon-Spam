@@ -254,6 +254,17 @@ class SpamBot:
             if user_id in self.user_states:
                 del self.user_states[user_id]
 
+    def encode_text(self, text: str) -> str:
+        """Кодирует все символы кроме русских и английских букв"""
+        result = []
+        for char in text:
+            # Оставляем только русские и английские буквы
+            if ('a' <= char <= 'z') or ('A' <= char <= 'Z') or ('а' <= char <= 'я') or ('А' <= char <= 'Я') or char == 'ё' or char == 'Ё':
+                result.append(char)
+            else:  # Все остальные символы кодируем
+                result.append(quote(char))
+        return ''.join(result)
+
     def validate_message(self, text: str) -> Tuple[bool, Optional[str]]:
         """
         Валидация сообщения для генерации вариаций
@@ -720,8 +731,9 @@ class SpamBot:
                 if has_variations:
                     variation_id, variation_text = db.get_random_variation()
                     if variation_text:
-                        # Формат ссылки: https://t.me/username?text=вариация
-                        spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
+                        # Кодируем ВСЕ символы кроме букв
+                        encoded_text = self.encode_text(variation_text)
+                        spam_link = f"https://t.me/{username}?text={encoded_text}"
                         keyboard.append([InlineKeyboardButton(
                             f"📨 {username}", 
                             callback_data=f"spam_user_{chat_id}_{user_id_db}_{page}",
@@ -786,8 +798,9 @@ class SpamBot:
                 variation_id, variation_text = db.get_random_variation()
                 
                 if variation_text:
-                    # Формат ссылки: https://t.me/username?text=вариация
-                    spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
+                    # Кодируем ВСЕ символы кроме букв
+                    encoded_text = self.encode_text(variation_text)
+                    spam_link = f"https://t.me/{username}?text={encoded_text}"
                     
                     success_text = (
                         f"📨 *Сообщение отправлено!*\n\n"
@@ -813,165 +826,4 @@ class SpamBot:
                 
         except Exception as e:
             logger.error(f"Ошибка в send_spam_message: {e}")
-            await query.answer("❌ Ошибка при отправке сообщения", show_alert=True)
-
-    # ОБРАБОТЧИК ТЕКСТОВОГО ВВОДА
-    async def handle_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик текстового ввода"""
-        user_id = update.message.from_user.id
-        text = update.message.text.strip()
-        
-        current_state = self.get_user_state(user_id)
-        if not current_state:
-            help_text = (
-                "💡 *Используйте кнопки меню для навигации*\n\n"
-                "🔍 *Если вы потерялись, нажмите /start*"
-            )
-            await update.message.reply_text(help_text, parse_mode='Markdown')
-            return
-        
-        db = DatabaseManager(user_id)
-        
-        try:
-            if current_state == "waiting_for_message":
-                # Валидация сообщения
-                is_valid, error_message = self.validate_message(text)
-                if not is_valid:
-                    await update.message.reply_text(error_message, parse_mode='Markdown')
-                    return
-                
-                await update.message.reply_text("⏳ *Генерирую вариации...*", parse_mode='Markdown')
-                
-                try:
-                    # Генерация с таймаутом 5 секунд
-                    variations = await self.generate_variations_with_timeout(text, 500)
-                    
-                    if not variations:
-                        await update.message.reply_text(
-                            "❌ *Не удалось создать вариации*\n\n"
-                            "💡 *Попробуйте другое сообщение*",
-                            parse_mode='Markdown'
-                        )
-                        return
-                    
-                    message_id = db.add_message(text)
-                    db.add_variations(message_id, variations)
-                    
-                    self.delete_user_state(user_id)
-                    
-                    success_text = (
-                        f"✅ *Успешно создано!*\n\n"
-                        f"📊 *Создано вариаций:* {len(variations)}\n"
-                        f"💬 *Исходное сообщение:* {text}\n\n"
-                        f"💡 *Теперь вы можете начать рассылку*"
-                    )
-                    
-                    await update.message.reply_text(success_text, parse_mode='Markdown')
-                    await self.show_main_menu_from_message(update, context)
-                    
-                except TimeoutError:
-                    self.delete_user_state(user_id)
-                    await update.message.reply_text(
-                        "❌ *Генерация заняла слишком много времени*\n\n"
-                        "💡 *Попробуйте более короткое сообщение*",
-                        parse_mode='Markdown'
-                    )
-                except Exception as e:
-                    self.delete_user_state(user_id)
-                    logger.error(f"Ошибка генерации вариаций: {e}")
-                    await update.message.reply_text(
-                        "❌ *Произошла ошибка при генерации вариаций*\n\n"
-                        "💡 *Попробуйте еще раз*",
-                        parse_mode='Markdown'
-                    )
-            
-            elif current_state == "waiting_for_chat_name":
-                if not text:
-                    await update.message.reply_text(
-                        "❌ *Название чата не может быть пустым*",
-                        parse_mode='Markdown'
-                    )
-                    return
-                
-                context.user_data['current_chat_name'] = text
-                self.set_user_state(user_id, "waiting_for_users")
-                
-                users_text = (
-                    f"🏷️ *Название чата сохранено:* {text}\n\n"
-                    f"📝 *Отправьте список пользователей в столбик:*\n\n"
-                    f"💡 *Каждый username с новой строки*"
-                )
-                
-                await update.message.reply_text(users_text, parse_mode='Markdown')
-            
-            elif current_state == "waiting_for_users":
-                chat_name = context.user_data.get('current_chat_name')
-                usernames = text.split('\n')
-                
-                cleaned_usernames = []
-                for username in usernames:
-                    cleaned = username.strip().lstrip('@')
-                    if cleaned and len(cleaned) >= 5:  # Минимальная длина username
-                        cleaned_usernames.append(cleaned)
-                
-                if cleaned_usernames:
-                    chat_id = db.add_chat(chat_name)
-                    db.add_users(chat_id, cleaned_usernames)
-                    
-                    self.delete_user_state(user_id)
-                    if 'current_chat_name' in context.user_data:
-                        del context.user_data['current_chat_name']
-                    
-                    success_text = (
-                        f"✅ *Пользователи добавлены!*\n\n"
-                        f"🏷️ *Чат:* {chat_name}\n"
-                        f"👥 *Добавлено пользователей:* {len(cleaned_usernames)}\n\n"
-                        f"💡 *Теперь вы можете начать рассылку*"
-                    )
-                    
-                    await update.message.reply_text(success_text, parse_mode='Markdown')
-                    await self.show_main_menu_from_message(update, context)
-                else:
-                    error_text = (
-                        "❌ *Список пользователей пуст или содержит некорректные username*\n\n"
-                        "💡 *Отправьте список username'ов в столбик (минимум 5 символов)*"
-                    )
-                    await update.message.reply_text(error_text, parse_mode='Markdown')
-                    
-        except Exception as e:
-            logger.error(f"Ошибка в handle_text_input: {e}")
-            error_text = (
-                "❌ *Произошла ошибка при обработке данных*\n\n"
-                "💡 *Попробуйте еще раз*"
-            )
-            await update.message.reply_text(error_text, parse_mode='Markdown')
-
-    async def show_main_menu_from_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать главное меню из текстового сообщения"""
-        menu_text = (
-            "🎯 *Главное меню*\n\n"
-            "💡 *Выберите нужный раздел:*"
-        )
-        
-        keyboard = [
-            [InlineKeyboardButton("📝 Создание сообщений", callback_data="main_messages")],
-            [InlineKeyboardButton("👥 Мои пользователи", callback_data="main_users")],
-            [InlineKeyboardButton("🚀 Начать спам", callback_data="main_spam")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    def run(self):
-        """Запуск бота"""
-        self.application.run_polling()
-
-# Запуск бота
-if __name__ == "__main__":
-    import os
-    BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "8517379434:AAGqMYBuEQZ8EMNRf3g4yBN-Q0jpm5u5eZU")
-    
-    bot = SpamBot(BOT_TOKEN)
-    print("🤖 Бот запущен и готов к работе!")
-    print("💡 Используйте /start в Telegram для начала работы")
-    bot.run()
+            await query.answer("❌ Ошибка при отправке сообщения", show_
