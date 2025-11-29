@@ -1,11 +1,11 @@
-import logging
 import sqlite3
-import random
-from typing import Dict, List, Tuple
-from urllib.parse import quote
-
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import random
+import urllib.parse
+from typing import Dict, List, Set
+import re
 
 # Настройка логирования
 logging.basicConfig(
@@ -14,830 +14,898 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Словарь для замены кириллических букв на латинские
-REPLACEMENTS = {
-    'а': 'a', 'с': 'c', 'о': 'o', 'р': 'p', 'е': 'e', 'х': 'x', 'у': 'y',
-    'А': 'A', 'С': 'C', 'О': 'O', 'Р': 'P', 'Е': 'E', 'Х': 'X', 'У': 'Y'
+# Инициализация базы данных
+def init_db():
+    conn = sqlite3.connect('bot_database.db', check_same_thread=False)
+    cursor = conn.cursor()
+    
+    # Таблица для исходных сообщений
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS original_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            original_text TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Таблица для вариаций сообщений
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS message_variations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            original_message_id INTEGER NOT NULL,
+            variation_text TEXT NOT NULL,
+            send_count INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (original_message_id) REFERENCES original_messages (id)
+        )
+    ''')
+    
+    # Таблица для чатов и пользователей
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_chats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            chat_name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            FOREIGN KEY (chat_id) REFERENCES user_chats (id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# Словарь для отслеживания состояний пользователей
+user_states = {}
+
+# Эмодзи для красивого оформления
+EMOJI = {
+    "welcome": "👋",
+    "messages": "📝",
+    "users": "👥",
+    "spam": "🚀",
+    "create": "✨",
+    "delete": "🗑️",
+    "add": "➕",
+    "back": "🔙",
+    "home": "🏠",
+    "success": "✅",
+    "error": "❌",
+    "warning": "⚠️",
+    "info": "ℹ️",
+    "chat": "💬",
+    "user": "👤",
+    "stats": "📊",
+    "random": "🎲",
+    "link": "🔗",
+    "next": "➡️",
+    "prev": "⬅️"
 }
 
-class DatabaseManager:
-    def __init__(self, user_id: int):
-        self.user_id = user_id
-        self.db_name = f"user_{user_id}.db"
-        self.init_database()
+# Функции для работы с базой данных
+def get_db_connection():
+    return sqlite3.connect('bot_database.db', check_same_thread=False)
 
-    def init_database(self):
-        """Инициализация базы данных для пользователя"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        
-        # Таблица для исходных сообщений
+def add_original_message(user_id: int, text: str) -> int:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO original_messages (user_id, original_text) VALUES (?, ?)', (user_id, text))
+    message_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return message_id
+
+def add_message_variation(user_id: int, original_message_id: int, variation_text: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                original_text TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Таблица для вариаций сообщений
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS variations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id INTEGER,
-                variation_text TEXT NOT NULL,
-                send_count INTEGER DEFAULT 0,
-                FOREIGN KEY (message_id) REFERENCES messages (id)
-            )
-        ''')
-        
-        # Таблица для чатов
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS chats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE
-            )
-        ''')
-        
-        # Таблица для пользователей
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER,
-                username TEXT NOT NULL,
-                FOREIGN KEY (chat_id) REFERENCES chats (id)
-            )
-        ''')
-        
+            INSERT INTO message_variations (user_id, original_message_id, variation_text) 
+            VALUES (?, ?, ?)
+        ''', (user_id, original_message_id, variation_text))
         conn.commit()
+    except sqlite3.IntegrityError as e:
+        logger.warning(f"Duplicate variation skipped: {e}")
+    except Exception as e:
+        logger.error(f"Error adding variation: {e}")
+    finally:
         conn.close()
 
-    def add_message(self, original_text: str) -> int:
-        """Добавление исходного сообщения"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('INSERT INTO messages (original_text) VALUES (?)', (original_text,))
-        message_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return message_id
+def get_user_original_messages(user_id: int) -> List[tuple]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, original_text FROM original_messages WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+    messages = cursor.fetchall()
+    conn.close()
+    return messages
 
-    def add_variations(self, message_id: int, variations: List[str]):
-        """Добавление вариаций сообщения"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.executemany(
-            'INSERT INTO variations (message_id, variation_text) VALUES (?, ?)',
-            [(message_id, variation) for variation in variations]
+def delete_message_variations(user_id: int, original_message_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM message_variations WHERE user_id = ? AND original_message_id = ?', 
+                   (user_id, original_message_id))
+    cursor.execute('DELETE FROM original_messages WHERE id = ? AND user_id = ?', 
+                   (original_message_id, user_id))
+    conn.commit()
+    conn.close()
+
+def get_random_variation(user_id: int) -> tuple:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, variation_text, send_count 
+        FROM message_variations 
+        WHERE user_id = ? AND send_count < 5 
+        ORDER BY RANDOM() 
+        LIMIT 1
+    ''', (user_id,))
+    variation = cursor.fetchone()
+    conn.close()
+    return variation
+
+def increment_send_count(variation_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE message_variations SET send_count = send_count + 1 WHERE id = ?', (variation_id,))
+    conn.commit()
+    conn.close()
+
+def delete_used_variation(variation_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM message_variations WHERE id = ?', (variation_id,))
+    conn.commit()
+    conn.close()
+
+def add_user_chat(user_id: int, chat_name: str) -> int:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO user_chats (user_id, chat_name) VALUES (?, ?)', (user_id, chat_name))
+    chat_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return chat_id
+
+def add_chat_users(chat_id: int, usernames: List[str]):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    for username in usernames:
+        cursor.execute('INSERT INTO chat_users (chat_id, username) VALUES (?, ?)', (chat_id, username))
+    conn.commit()
+    conn.close()
+
+def get_user_chats(user_id: int) -> List[tuple]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, chat_name FROM user_chats WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+    chats = cursor.fetchall()
+    conn.close()
+    return chats
+
+def get_chat_users(chat_id: int) -> List[str]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT username FROM chat_users WHERE chat_id = ?', (chat_id,))
+    users = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return users
+
+def delete_user_chat(user_id: int, chat_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM chat_users WHERE chat_id = ?', (chat_id,))
+    cursor.execute('DELETE FROM user_chats WHERE id = ? AND user_id = ?', (chat_id, user_id))
+    conn.commit()
+    conn.close()
+
+def get_user_stats(user_id: int) -> dict:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Количество исходных сообщений
+    cursor.execute('SELECT COUNT(*) FROM original_messages WHERE user_id = ?', (user_id,))
+    original_count = cursor.fetchone()[0]
+    
+    # Количество вариаций
+    cursor.execute('SELECT COUNT(*) FROM message_variations WHERE user_id = ?', (user_id,))
+    variations_count = cursor.fetchone()[0]
+    
+    # Количество доступных вариаций (send_count < 5)
+    cursor.execute('SELECT COUNT(*) FROM message_variations WHERE user_id = ? AND send_count < 5', (user_id,))
+    available_count = cursor.fetchone()[0]
+    
+    # Количество чатов
+    cursor.execute('SELECT COUNT(*) FROM user_chats WHERE user_id = ?', (user_id,))
+    chats_count = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    return {
+        'original_messages': original_count,
+        'total_variations': variations_count,
+        'available_variations': available_count,
+        'chats': chats_count
+    }
+
+# Функция для диагностики проблем пользователя
+def diagnose_user_issues(user_id: int) -> str:
+    """Диагностика проблем пользователя для раздела спама"""
+    issues = []
+    
+    # Проверяем чаты
+    chats = get_user_chats(user_id)
+    if not chats:
+        issues.append("❌ Нет сохраненных чатов")
+    else:
+        issues.append(f"✅ Чатов: {len(chats)}")
+        
+        # Проверяем пользователей в чатах
+        total_users = 0
+        for chat_id, chat_name in chats:
+            users = get_chat_users(chat_id)
+            total_users += len(users)
+            if len(users) == 0:
+                issues.append(f"❌ В чате '{chat_name}' нет пользователей")
+        
+        issues.append(f"✅ Всего пользователей: {total_users}")
+    
+    # Проверяем вариации
+    stats = get_user_stats(user_id)
+    if stats['available_variations'] == 0:
+        issues.append("❌ Нет доступных вариаций для отправки")
+    else:
+        issues.append(f"✅ Доступных вариаций: {stats['available_variations']}")
+    
+    if stats['total_variations'] == 0:
+        issues.append("❌ Нет созданных вариаций")
+    else:
+        issues.append(f"✅ Всего вариаций: {stats['total_variations']}")
+    
+    return "\n".join(issues)
+
+# УЛУЧШЕННАЯ функция для генерации вариаций
+def generate_variations(text: str, count: int = 500) -> List[str]:
+    """
+    Генерирует уникальные вариации сообщения путем замены кириллических букв на латинские
+    """
+    logger.info(f"Generating variations for text: {text}")
+    
+    # Карта замен: кириллическая -> возможные латинские замены
+    char_map = {
+        'а': ['a', 'а'],  # латинская a, кириллическая а
+        'с': ['c', 'с'],  # латинская c, кириллическая с
+        'о': ['o', 'о'],  # латинская o, кириллическая о
+        'р': ['p', 'р'],  # латинская p, кириллическая р
+        'е': ['e', 'е'],  # латинская e, кириллическая е
+        'х': ['x', 'х'],  # латинская x, кириллическая х
+        'у': ['y', 'у'],  # латинская y, кириллическая у
+        'А': ['A', 'А'],
+        'С': ['C', 'С'],
+        'О': ['O', 'О'],
+        'Р': ['P', 'Р'],
+        'Е': ['E', 'Е'],
+        'Х': ['X', 'Х'],
+        'У': ['Y', 'У']
+    }
+    
+    variations = set()
+    variations.add(text)  # Всегда добавляем оригинальный текст
+    
+    # Находим позиции букв, которые можно заменять
+    replaceable_chars = []
+    for char in text:
+        if char in char_map:
+            replaceable_chars.append(char)
+    
+    logger.info(f"Replaceable characters found: {len(replaceable_chars)}")
+    
+    if not replaceable_chars:
+        logger.info("No replaceable characters found, returning original text")
+        return [text] * count
+    
+    # Генерируем вариации
+    max_attempts = count * 3
+    attempts = 0
+    
+    while len(variations) < count and attempts < max_attempts:
+        attempts += 1
+        new_variation = []
+        
+        for char in text:
+            if char in char_map and random.random() > 0.3:  # 70% шанс замены
+                new_char = random.choice(char_map[char])
+                new_variation.append(new_char)
+            else:
+                new_variation.append(char)
+        
+        variation_str = ''.join(new_variation)
+        variations.add(variation_str)
+    
+    # Если не набрали достаточно вариаций, создаем дополнительные
+    if len(variations) < count:
+        base_variations = list(variations)
+        needed = count - len(variations)
+        
+        for i in range(needed):
+            # Берем случайную вариацию и немного модифицируем
+            base = random.choice(base_variations)
+            new_variation = []
+            
+            for char in base:
+                if char in char_map and random.random() > 0.8:  # 20% шанс замены
+                    new_char = random.choice(char_map[char])
+                    new_variation.append(new_char)
+                else:
+                    new_variation.append(char)
+            
+            variation_str = ''.join(new_variation)
+            variations.add(variation_str)
+    
+    result = list(variations)[:count]
+    logger.info(f"Generated {len(result)} variations")
+    return result
+
+def generate_telegram_link(text: str) -> str:
+    encoded_text = urllib.parse.quote(text)
+    return f"https://t.me/PoizonRik?text={encoded_text}"
+
+# Красивые функции оформления сообщений
+def format_welcome_message(user_id: int = None) -> str:
+    stats = get_user_stats(user_id) if user_id else None
+    if stats:
+        stats_text = f"""
+*Ваша статистика:*
+• Сообщений: {stats['original_messages']}
+• Вариаций: {stats['total_variations']} 
+• Доступно: {stats['available_variations']}
+• Чатов: {stats['chats']}
+"""
+    else:
+        stats_text = ""
+    
+    message = f"""
+{EMOJI['welcome']} *Добро пожаловать в MessageVariator Bot!* {EMOJI['welcome']}
+
+*Возможности бота:*
+{EMOJI['messages']} Создание уникальных вариаций сообщений
+{EMOJI['users']} Управление списками пользователей  
+{EMOJI['spam']} Умная рассылка с ограничениями
+
+{stats_text}
+*Чтобы начать, выберите раздел ниже:*
+    """
+    return message.strip()
+
+def format_messages_menu(user_id: int) -> str:
+    stats = get_user_stats(user_id)
+    return f"""
+{EMOJI['messages']} *РАЗДЕЛ: СОЗДАНИЕ СООБЩЕНИЙ*
+
+*Ваша статистика:*
+• Исходных сообщений: {stats['original_messages']}
+• Всего вариаций: {stats['total_variations']}
+• Доступно для отправки: {stats['available_variations']}
+    """.strip()
+
+def format_users_menu(user_id: int) -> str:
+    stats = get_user_stats(user_id)
+    return f"""
+{EMOJI['users']} *РАЗДЕЛ: МОИ ПОЛЬЗОВАТЕЛИ*
+
+*Статистика:*
+• Сохраненных чатов: {stats['chats']}
+    """.strip()
+
+def format_spam_menu(user_id: int) -> str:
+    stats = get_user_stats(user_id)
+    return f"""
+{EMOJI['spam']} *РАЗДЕЛ: НАЧАТЬ РАССЫЛКУ*
+
+*Готово к рассылке:*
+• Доступных чатов: {stats['chats']}
+• Доступных вариаций: {stats['available_variations']}
+    """.strip()
+
+# Команда /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    keyboard = [
+        [InlineKeyboardButton(f"{EMOJI['messages']} Создание сообщений", callback_data="create_messages")],
+        [InlineKeyboardButton(f"{EMOJI['users']} Мои пользователи", callback_data="my_users")],
+        [InlineKeyboardButton(f"{EMOJI['spam']} Начать рассылку", callback_data="start_spam")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.message:
+        await update.message.reply_text(
+            format_welcome_message(user_id), 
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
-        conn.commit()
-        conn.close()
-
-    def get_messages(self) -> List[Tuple[int, str]]:
-        """Получение списка исходных сообщений"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('SELECT id, original_text FROM messages ORDER BY created_at DESC')
-        messages = cursor.fetchall()
-        conn.close()
-        return messages
-
-    def delete_message(self, message_id: int):
-        """Удаление сообщения и всех его вариаций"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM variations WHERE message_id = ?', (message_id,))
-        cursor.execute('DELETE FROM messages WHERE id = ?', (message_id,))
-        conn.commit()
-        conn.close()
-
-    def add_chat(self, chat_name: str) -> int:
-        """Добавление чата"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        try:
-            cursor.execute('INSERT INTO chats (name) VALUES (?)', (chat_name,))
-            chat_id = cursor.lastrowid
-        except sqlite3.IntegrityError:
-            cursor.execute('SELECT id FROM chats WHERE name = ?', (chat_name,))
-            chat_id = cursor.fetchone()[0]
-        conn.commit()
-        conn.close()
-        return chat_id
-
-    def add_users(self, chat_id: int, usernames: List[str]):
-        """Добавление пользователей в чат"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.executemany(
-            'INSERT OR IGNORE INTO users (chat_id, username) VALUES (?, ?)',
-            [(chat_id, username.strip()) for username in usernames]
+    else:
+        await update.callback_query.edit_message_text(
+            format_welcome_message(user_id),
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
-        conn.commit()
-        conn.close()
 
-    def get_chats(self) -> List[Tuple[int, str]]:
-        """Получение списка чатов"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('SELECT id, name FROM chats ORDER BY name')
-        chats = cursor.fetchall()
-        conn.close()
-        return chats
-
-    def delete_chat(self, chat_id: int):
-        """Удаление чата и всех его пользователей"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM users WHERE chat_id = ?', (chat_id,))
-        cursor.execute('DELETE FROM chats WHERE id = ?', (chat_id,))
-        conn.commit()
-        conn.close()
-
-    def get_users_by_chat(self, chat_id: int, offset: int = 0, limit: int = 25) -> List[Tuple[int, str]]:
-        """Получение пользователей чата с пагинацией"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT id, username FROM users WHERE chat_id = ? LIMIT ? OFFSET ?',
-            (chat_id, limit, offset)
-        )
-        users = cursor.fetchall()
-        conn.close()
-        return users
-
-    def get_total_users_count(self, chat_id: int) -> int:
-        """Получение общего количества пользователей в чате"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('SELECT COUNT(*) FROM users WHERE chat_id = ?', (chat_id,))
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count
-
-    def get_random_variation(self) -> Tuple[int, str]:
-        """Получение случайной вариации сообщения"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, variation_text FROM variations 
-            WHERE send_count < 5 
-            ORDER BY RANDOM() 
-            LIMIT 1
-        ''')
-        result = cursor.fetchone()
-        
-        if result:
-            variation_id, variation_text = result
-            # Увеличиваем счетчик отправок
-            cursor.execute(
-                'UPDATE variations SET send_count = send_count + 1 WHERE id = ?',
-                (variation_id,)
-            )
-            # Удаляем вариацию, если достигнут лимит
-            cursor.execute('DELETE FROM variations WHERE send_count >= 5')
-            conn.commit()
-            conn.close()
-            return variation_id, variation_text
-        
-        conn.close()
-        return None, None
-
-class SpamBot:
-    def __init__(self, token: str):
-        self.application = Application.builder().token(token).build()
-        self.user_states = {}
-        self.setup_handlers()
-
-    def setup_handlers(self):
-        """Настройка обработчиков"""
-        self.application.add_handler(CommandHandler("start", self.start))
-        self.application.add_handler(CallbackQueryHandler(self.handle_button, pattern="^main_"))
-        self.application.add_handler(CallbackQueryHandler(self.handle_messages, pattern="^messages_"))
-        self.application.add_handler(CallbackQueryHandler(self.handle_users, pattern="^users_"))
-        self.application.add_handler(CallbackQueryHandler(self.handle_spam, pattern="^spam_"))
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_input))
-
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /start"""
-        user_id = update.effective_user.id
-        
-        welcome_text = (
-            "🌟 *Добро пожаловать!* 🌟\n\n"
-            "💬 *Для начала работы используйте кнопки ниже:*\n\n"
-            "📝 *Создание сообщений* - создайте и управляйте вариациями сообщений\n"
-            "👥 *Мои пользователи* - добавьте списки пользователей для рассылки\n"
-            "🚀 *Начать спам* - запустите рассылку сообщений\n\n"
-            "💡 *Бот готов к работе! Выберите раздел:*"
-        )
-        
+# Обработчики callback запросов
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    data = query.data
+    
+    logger.info(f"User {user_id} pressed button: {data}")
+    
+    if data == "main_menu":
+        await start(update, context)
+    
+    elif data == "create_messages":
         keyboard = [
-            [InlineKeyboardButton("📝 Создание сообщений", callback_data="main_messages")],
-            [InlineKeyboardButton("👥 Мои пользователи", callback_data="main_users")],
-            [InlineKeyboardButton("🚀 Начать спам", callback_data="main_spam")]
+            [InlineKeyboardButton(f"{EMOJI['create']} Создать новое сообщение", callback_data="create_new_message")],
+            [InlineKeyboardButton(f"{EMOJI['delete']} Удалить сообщение", callback_data="delete_message")],
+            [InlineKeyboardButton(f"{EMOJI['stats']} Статистика", callback_data="show_stats")],
+            [InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="main_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать главное меню"""
-        query = update.callback_query
-        await query.answer()
-        
-        menu_text = (
-            "🎯 *Главное меню*\n\n"
-            "💡 *Выберите нужный раздел:*"
+        await query.edit_message_text(
+            format_messages_menu(user_id),
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
+    
+    elif data == "show_stats":
+        stats = get_user_stats(user_id)
+        stats_text = f"""
+{EMOJI['stats']} *ВАША СТАТИСТИКА*
+
+{EMOJI['messages']} *Сообщения:*
+• Исходных сообщений: {stats['original_messages']}
+• Всего вариаций: {stats['total_variations']}
+• Доступно для отправки: {stats['available_variations']}
+
+{EMOJI['users']} *Пользователи:*
+• Чатов: {stats['chats']}
+        """.strip()
         
         keyboard = [
-            [InlineKeyboardButton("📝 Создание сообщений", callback_data="main_messages")],
-            [InlineKeyboardButton("👥 Мои пользователи", callback_data="main_users")],
-            [InlineKeyboardButton("🚀 Начать спам", callback_data="main_spam")]
+            [InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="create_messages")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик кнопок главного меню"""
-        query = update.callback_query
-        data = query.data
-        
-        if data == "main_messages":
-            await self.show_messages_menu(update, context)
-        elif data == "main_users":
-            await self.show_users_menu(update, context)
-        elif data == "main_spam":
-            await self.show_spam_menu(update, context)
-        elif data == "main_back":
-            await self.show_main_menu(update, context)
-
-    # РАЗДЕЛ СОЗДАНИЯ СООБЩЕНИЙ
-    async def show_messages_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Меню создания сообщений"""
-        query = update.callback_query
-        await query.answer()
-        
-        menu_text = (
-            "📝 *Создание сообщений*\n\n"
-            "✨ *Доступные действия:*\n"
-            "• 📄 Создать новое сообщение с вариациями\n"
-            "• 🗑️ Удалить существующее сообщение\n\n"
-            "💡 *Выберите действие:*"
+        await query.edit_message_text(
+            stats_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
-        
-        keyboard = [
-            [InlineKeyboardButton("📄 Создать новое сообщение", callback_data="messages_create")],
-            [InlineKeyboardButton("🗑️ Удалить сообщение", callback_data="messages_delete")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="main_back")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def handle_messages(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик кнопок раздела сообщений"""
-        query = update.callback_query
-        data = query.data
-        user_id = query.from_user.id
-        
-        if data == "messages_create":
-            self.user_states[user_id] = "waiting_for_message"
-            create_text = (
-                "🆕 *Создание нового сообщения*\n\n"
-                "📨 *Введите исходное сообщение для создания вариаций:*\n\n"
-                "💡 *Бот автоматически создаст 500 уникальных вариаций*"
-            )
-            await query.edit_message_text(create_text, parse_mode='Markdown')
-        
-        elif data == "messages_delete":
-            await self.show_message_list(update, context)
-        
-        elif data.startswith("messages_delete_"):
-            message_id = int(data.split("_")[2])
-            db = DatabaseManager(user_id)
-            db.delete_message(message_id)
-            await query.answer("✅ Сообщение и все его вариации удалены!")
-            await self.show_messages_menu(update, context)
-        
-        elif data == "messages_back":
-            await self.show_messages_menu(update, context)
-
-    async def show_message_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать список сообщений для удаления"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        db = DatabaseManager(user_id)
-        messages = db.get_messages()
-        
+    
+    elif data == "create_new_message":
+        user_states[user_id] = "waiting_for_message"
+        await query.edit_message_text(
+            f"{EMOJI['create']} *СОЗДАНИЕ НОВОГО СООБЩЕНИЯ*\n\n"
+            "Введите исходное сообщение для создания 500 уникальных вариаций.\n\n"
+            f"{EMOJI['info']} *Бот заменит буквы:* а,с,о,р,е,х,у на латинские аналоги\n\n"
+            f"{EMOJI['warning']} *Сообщение должно содержать хотя бы одну из этих букв!*",
+            parse_mode='Markdown'
+        )
+    
+    elif data == "delete_message":
+        messages = get_user_original_messages(user_id)
         if not messages:
-            no_messages_text = (
-                "📭 *У вас нет созданных сообщений*\n\n"
-                "💡 *Создайте первое сообщение для работы*"
-            )
-            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="messages_back")]]
+            keyboard = [
+                [InlineKeyboardButton(f"{EMOJI['create']} Создать сообщение", callback_data="create_new_message")],
+                [InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="create_messages")]
+            ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(no_messages_text, reply_markup=reply_markup, parse_mode='Markdown')
+            await query.edit_message_text(
+                f"{EMOJI['warning']} У вас нет сохраненных сообщений.",
+                reply_markup=reply_markup
+            )
             return
         
-        list_text = (
-            "🗑️ *Удаление сообщений*\n\n"
-            "📋 *Выберите сообщение для удаления:*\n\n"
-            "⚠️ *Внимание: будут удалены ВСЕ вариации этого сообщения*"
-        )
-        
         keyboard = []
-        for msg_id, text in messages:
-            display_text = text[:50] + "..." if len(text) > 50 else text
-            keyboard.append([InlineKeyboardButton(f"📄 {display_text}", callback_data=f"messages_delete_{msg_id}")])
+        for msg_id, msg_text in messages:
+            button_text = f"{EMOJI['delete']} {msg_text[:25]}..." if len(msg_text) > 25 else f"{EMOJI['delete']} {msg_text}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"delete_msg_{msg_id}")])
         
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="messages_back")])
+        keyboard.append([InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="create_messages")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(list_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    def generate_variations(self, text: str, count: int = 500) -> List[str]:
-        """Генерация вариаций сообщения"""
-        variations = set()
-        chars_to_replace = list(REPLACEMENTS.keys())
-        
-        while len(variations) < count:
-            variation = list(text)
-            for i, char in enumerate(variation):
-                if char in REPLACEMENTS and random.random() < 0.3:
-                    variation[i] = REPLACEMENTS[char]
-            
-            variation_str = ''.join(variation)
-            if variation_str != text:
-                variations.add(variation_str)
-            
-            if len(variations) >= min(count, 2 ** len([c for c in text if c in chars_to_replace])):
-                break
-        
-        return list(variations)
-
-    # РАЗДЕЛ МОИХ ПОЛЬЗОВАТЕЛЕЙ
-    async def show_users_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Меню пользователей"""
-        query = update.callback_query
-        await query.answer()
-        
-        menu_text = (
-            "👥 *Мои пользователи*\n\n"
-            "✨ *Доступные действия:*\n"
-            "• ➕ Добавить новых пользователей\n"
-            "• 🗑️ Удалить список пользователей\n\n"
-            "💡 *Выберите действие:*"
+        await query.edit_message_text(
+            f"{EMOJI['delete']} *ВЫБЕРИТЕ СООБЩЕНИЕ ДЛЯ УДАЛЕНИЯ*\n\n"
+            f"{EMOJI['warning']} Будет удалено исходное сообщение и ВСЕ его вариации!",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
+    
+    elif data.startswith("delete_msg_"):
+        msg_id = int(data.split("_")[2])
+        delete_message_variations(user_id, msg_id)
         
         keyboard = [
-            [InlineKeyboardButton("➕ Добавить пользователей", callback_data="users_add")],
-            [InlineKeyboardButton("🗑️ Удалить список пользователей", callback_data="users_delete")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="main_back")]
+            [InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="create_messages")],
+            [InlineKeyboardButton(f"{EMOJI['home']} Главное меню", callback_data="main_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def handle_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик кнопок раздела пользователей"""
-        query = update.callback_query
-        data = query.data
-        user_id = query.from_user.id
-        
-        if data == "users_add":
-            self.user_states[user_id] = "waiting_for_chat_name"
-            add_text = (
-                "➕ *Добавление пользователей*\n\n"
-                "🏷️ *Напишите название чата из которого взяли пользователей:*\n\n"
-                "💡 *Пример: Основной чат, Резервный список*"
-            )
-            await query.edit_message_text(add_text, parse_mode='Markdown')
-        
-        elif data == "users_delete":
-            await self.show_chat_list(update, context)
-        
-        elif data.startswith("users_delete_"):
-            chat_id = int(data.split("_")[2])
-            db = DatabaseManager(user_id)
-            db.delete_chat(chat_id)
-            await query.answer("✅ Чат и все пользователи удалены!")
-            await self.show_users_menu(update, context)
-        
-        elif data == "users_back":
-            await self.show_users_menu(update, context)
-
-    async def show_chat_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать список чатов для удаления"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        db = DatabaseManager(user_id)
-        chats = db.get_chats()
-        
-        if not chats:
-            no_chats_text = (
-                "📭 *У вас нет добавленных чатов*\n\n"
-                "💡 *Добавьте первый чат с пользователями*"
-            )
-            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="users_back")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(no_chats_text, reply_markup=reply_markup, parse_mode='Markdown')
-            return
-        
-        list_text = (
-            "🗑️ *Удаление чатов*\n\n"
-            "📋 *Выберите чат для удаления:*\n\n"
-            "⚠️ *Внимание: будут удалены ВСЕ пользователи этого чата*"
+        await query.edit_message_text(
+            f"{EMOJI['success']} Сообщение и все его вариации успешно удалены!",
+            reply_markup=reply_markup
         )
-        
-        keyboard = []
-        for chat_id, name in chats:
-            keyboard.append([InlineKeyboardButton(f"👥 {name}", callback_data=f"users_delete_{chat_id}")])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="users_back")])
+    
+    elif data == "my_users":
+        keyboard = [
+            [InlineKeyboardButton(f"{EMOJI['add']} Добавить пользователей", callback_data="add_users")],
+            [InlineKeyboardButton(f"{EMOJI['delete']} Удалить список пользователей", callback_data="delete_chat_list")],
+            [InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="main_menu")]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(list_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    # РАЗДЕЛ НАЧАТЬ СПАМ
-    async def show_spam_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Меню рассылки"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        db = DatabaseManager(user_id)
-        chats = db.get_chats()
-        
-        if not chats:
-            no_chats_text = (
-                "📭 *У вас нет добавленных чатов*\n\n"
-                "💡 *Сначала добавьте пользователей в разделе \"👥 Мои пользователи\"*"
-            )
-            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_back")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(no_chats_text, reply_markup=reply_markup, parse_mode='Markdown')
-            return
-        
-        menu_text = (
-            "🚀 *Начать рассылку*\n\n"
-            "📋 *Выберите чат для рассылки:*\n\n"
-            "💡 *После выбора чата откроется список пользователей*"
+        await query.edit_message_text(
+            format_users_menu(user_id),
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
-        
-        keyboard = []
-        for chat_id, name in chats:
-            keyboard.append([InlineKeyboardButton(f"👥 {name}", callback_data=f"spam_chat_{chat_id}_0")])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="main_back")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def handle_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик кнопок раздела рассылки"""
-        query = update.callback_query
-        data = query.data
-        user_id = query.from_user.id
-        
-        if data.startswith("spam_chat_"):
-            parts = data.split("_")
-            chat_id = int(parts[2])
-            page = int(parts[3])
-            await self.show_users_for_spam(update, context, chat_id, page)
-        
-        elif data.startswith("spam_user_"):
-            parts = data.split("_")
-            chat_id = int(parts[2])
-            user_id_for_spam = int(parts[3])
-            page = int(parts[4])
-            await self.send_spam_message(update, context, user_id_for_spam, chat_id, page)
-        
-        elif data.startswith("spam_page_"):
-            parts = data.split("_")
-            chat_id = int(parts[2])
-            page = int(parts[3])
-            await self.show_users_for_spam(update, context, chat_id, page)
-        
-        elif data == "spam_back":
-            await self.show_spam_menu(update, context)
-        
-        elif data == "spam_goto":
-            self.user_states[user_id] = "waiting_for_page_number"
-            context.user_data['current_chat_id'] = chat_id
-            await query.answer("📝 Введите номер страницы")
+    
+    elif data == "add_users":
+        user_states[user_id] = "waiting_for_chat_name"
+        await query.edit_message_text(
+            f"{EMOJI['add']} *ДОБАВЛЕНИЕ ПОЛЬЗОВАТЕЛЕЙ*\n\n"
+            "Напишите название чата, из которого взяли пользователей:",
+            parse_mode='Markdown'
+        )
+    
+    elif data == "delete_chat_list":
+        chats = get_user_chats(user_id)
+        if not chats:
+            keyboard = [
+                [InlineKeyboardButton(f"{EMOJI['add']} Добавить чат", callback_data="add_users")],
+                [InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="my_users")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                "📄 *Введите номер страницы для перехода:*",
+                f"{EMOJI['warning']} У вас нет сохраненных чатов.",
+                reply_markup=reply_markup
+            )
+            return
+        
+        keyboard = []
+        for chat_id, chat_name in chats:
+            keyboard.append([InlineKeyboardButton(f"{EMOJI['delete']} {chat_name}", callback_data=f"delete_chat_{chat_id}")])
+        
+        keyboard.append([InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="my_users")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"{EMOJI['delete']} *ВЫБЕРИТЕ ЧАТ ДЛЯ УДАЛЕНИЯ*\n\n"
+            f"{EMOJI['warning']} Будет удален чат и ВСЕ его пользователи!",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    
+    elif data.startswith("delete_chat_"):
+        chat_id = int(data.split("_")[2])
+        delete_user_chat(user_id, chat_id)
+        
+        keyboard = [
+            [InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="my_users")],
+            [InlineKeyboardButton(f"{EMOJI['home']} Главное меню", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"{EMOJI['success']} Чат и все его пользователи успешно удалены!",
+            reply_markup=reply_markup
+        )
+    
+    elif data == "start_spam":
+        logger.info(f"User {user_id} accessing start_spam section")
+        
+        # ДИАГНОСТИКА: Проверяем данные пользователя
+        chats = get_user_chats(user_id)
+        stats = get_user_stats(user_id)
+        
+        logger.info(f"User {user_id} stats: {stats}")
+        logger.info(f"User {user_id} chats: {chats}")
+        
+        if not chats:
+            # Добавляем кнопку диагностики
+            keyboard = [
+                [InlineKeyboardButton(f"{EMOJI['add']} Добавить чат", callback_data="add_users")],
+                [InlineKeyboardButton(f"🔍 Диагностика проблемы", callback_data="diagnose_issues")],
+                [InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"{EMOJI['warning']} *НЕТ ДОСТУПНЫХ ЧАТОВ*\n\n"
+                "У вас нет сохраненных чатов для рассылки.\n\n"
+                "Сначала добавьте чаты в разделе 'Мои пользователи'.",
+                reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
-
-    async def show_users_for_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, page: int = 0):
-        """Показать пользователей чата для рассылки"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        db = DatabaseManager(user_id)
-        
-        users = db.get_users_by_chat(chat_id, page * 25, 25)
-        total_users = db.get_total_users_count(chat_id)
-        total_pages = (total_users + 24) // 25
-        
-        if not users:
-            await query.answer("❌ В этом чате нет пользователей!")
             return
         
-        chat_name = "Неизвестный чат"
-        chats = db.get_chats()
-        for cid, name in chats:
-            if cid == chat_id:
-                chat_name = name
-                break
+        if stats['available_variations'] == 0:
+            # Добавляем кнопку диагностики
+            keyboard = [
+                [InlineKeyboardButton(f"{EMOJI['create']} Создать сообщения", callback_data="create_new_message")],
+                [InlineKeyboardButton(f"🔍 Диагностика проблемы", callback_data="diagnose_issues")],
+                [InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"{EMOJI['warning']} *НЕТ ДОСТУПНЫХ ВАРИАЦИЙ*\n\n"
+                "Нет доступных вариаций для отправки.\n\n"
+                "Сначала создайте сообщения в соответствующем разделе.",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+            return
         
-        users_text = (
-            f"👥 *Чат: {chat_name}*\n"
-            f"📄 *Страница: {page + 1} из {total_pages}*\n"
-            f"👤 *Всего пользователей: {total_users}*\n\n"
-            f"💡 *Нажмите на кнопку с пользователем для отправки сообщения:*"
-        )
-        
+        # ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ - показываем чаты
         keyboard = []
-        # Добавляем нумерованные кнопки пользователей
-        for index, (user_id_db, username) in enumerate(users):
-            user_number = page * 25 + index + 1  # Номер пользователя (начинается с 1)
-            variation_id, variation_text = db.get_random_variation()
-            if variation_text:
-                spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
-                keyboard.append([InlineKeyboardButton(
-                    f"{user_number}. 📨 {username}", 
-                    callback_data=f"spam_user_{chat_id}_{user_id_db}_{page}",
-                    url=spam_link
-                )])
-            else:
-                keyboard.append([InlineKeyboardButton(
-                    f"{user_number}. ❌ {username} (нет вариаций)", 
-                    callback_data="no_action"
-                )])
+        for chat_id, chat_name in chats:
+            # Проверяем, есть ли пользователи в чате
+            users_count = len(get_chat_users(chat_id))
+            button_text = f"{EMOJI['chat']} {chat_name} ({users_count} users)"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"select_chat_{chat_id}_page_0")])
         
-        # Навигационные кнопки
-        nav_buttons = []
-        if page > 0:
-            nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"spam_page_{chat_id}_{page-1}"))
+        # Добавляем кнопку диагностики
+        keyboard.append([InlineKeyboardButton(f"🔍 Диагностика", callback_data="diagnose_issues")])
+        keyboard.append([InlineKeyboardButton(f"{EMOJI['back']} Назад", callback_data="main_menu")])
         
-        # Кнопка для ввода номера страницы
-        nav_buttons.append(InlineKeyboardButton("🔢 Перейти", callback_data="spam_goto"))
-        
-        if page < total_pages - 1:
-            nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"spam_page_{chat_id}_{page+1}"))
-        
-        if nav_buttons:
-            keyboard.append(nav_buttons)
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад к чатам", callback_data="main_spam")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(users_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def send_spam_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id_db: int, chat_id: int, page: int):
-        """Отправка спам-сообщения"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        db = DatabaseManager(user_id)
-        
-        users = db.get_users_by_chat(chat_id, 0, 1000)
-        target_user = next((user for user in users if user[0] == user_id_db), None)
-        
-        if target_user:
-            username = target_user[1]
-            variation_id, variation_text = db.get_random_variation()
-            
-            if variation_text:
-                spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
-                await query.answer(f"✅ Сообщение отправлено пользователю {username}!")
-                
-                success_text = (
-                    f"📨 *Сообщение отправлено!*\n\n"
-                    f"👤 *Пользователь:* {username}\n"
-                    f"💬 *Текст:* {variation_text}\n\n"
-                    f"[🔄 Открыть чат]({spam_link})"
-                )
-                
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=success_text,
-                    parse_mode='Markdown',
-                    disable_web_page_preview=True
-                )
-            else:
-                await query.answer("❌ Нет доступных вариаций сообщений!")
-        else:
-            await query.answer("❌ Пользователь не найден!")
-
-    # ОБРАБОТЧИК ТЕКСТОВОГО ВВОДА
-    async def handle_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик текстового ввода"""
-        user_id = update.message.from_user.id
-        text = update.message.text
-        
-        if user_id not in self.user_states:
-            help_text = (
-                "💡 *Используйте кнопки меню для навигации*\n\n"
-                "🔍 *Если вы потерялись, нажмите /start*"
-            )
-            await update.message.reply_text(help_text, parse_mode='Markdown')
-            return
-        
-        state = self.user_states[user_id]
-        db = DatabaseManager(user_id)
-        
-        if state == "waiting_for_message":
-            await update.message.reply_text("⏳ *Генерирую вариации...*", parse_mode='Markdown')
-            
-            variations = self.generate_variations(text, 500)
-            message_id = db.add_message(text)
-            db.add_variations(message_id, variations)
-            
-            del self.user_states[user_id]
-            
-            success_text = (
-                f"✅ *Успешно создано!*\n\n"
-                f"📊 *Создано вариаций:* {len(variations)}\n"
-                f"💬 *Исходное сообщение:* {text}\n\n"
-                f"💡 *Теперь вы можете начать рассылку*"
-            )
-            
-            await update.message.reply_text(success_text, parse_mode='Markdown')
-            await self.show_main_menu_from_message(update, context)
-        
-        elif state == "waiting_for_chat_name":
-            context.user_data['current_chat_name'] = text
-            self.user_states[user_id] = "waiting_for_users"
-            
-            users_text = (
-                f"🏷️ *Название чата сохранено:* {text}\n\n"
-                f"📝 *Отправьте список пользователей в столбик:*\n\n"
-                f"💡 *Каждый username с новой строки*"
-            )
-            
-            await update.message.reply_text(users_text, parse_mode='Markdown')
-        
-        elif state == "waiting_for_users":
-            chat_name = context.user_data.get('current_chat_name')
-            usernames = text.split('\n')
-            
-            cleaned_usernames = []
-            for username in usernames:
-                cleaned = username.strip().lstrip('@')
-                if cleaned:
-                    cleaned_usernames.append(cleaned)
-            
-            if cleaned_usernames:
-                chat_id = db.add_chat(chat_name)
-                db.add_users(chat_id, cleaned_usernames)
-                
-                del self.user_states[user_id]
-                if 'current_chat_name' in context.user_data:
-                    del context.user_data['current_chat_name']
-                
-                success_text = (
-                    f"✅ *Пользователи добавлены!*\n\n"
-                    f"🏷️ *Чат:* {chat_name}\n"
-                    f"👥 *Добавлено пользователей:* {len(cleaned_usernames)}\n\n"
-                    f"💡 *Теперь вы можете начать рассылку*"
-                )
-                
-                await update.message.reply_text(success_text, parse_mode='Markdown')
-                await self.show_main_menu_from_message(update, context)
-            else:
-                error_text = (
-                    "❌ *Список пользователей пуст*\n\n"
-                    "💡 *Отправьте список username'ов в столбик*"
-                )
-                await update.message.reply_text(error_text, parse_mode='Markdown')
-        
-        elif state == "waiting_for_page_number":
-            try:
-                page_number = int(text.strip())
-                if page_number < 1:
-                    raise ValueError
-                
-                chat_id = context.user_data.get('current_chat_id')
-                if not chat_id:
-                    await update.message.reply_text("❌ Ошибка: не найден ID чата")
-                    return
-                
-                db = DatabaseManager(user_id)
-                total_users = db.get_total_users_count(chat_id)
-                total_pages = (total_users + 24) // 25
-                
-                if page_number > total_pages:
-                    await update.message.reply_text(
-                        f"❌ *Страница {page_number} не существует*\n"
-                        f"📄 *Всего страниц: {total_pages}*",
-                        parse_mode='Markdown'
-                    )
-                    return
-                
-                del self.user_states[user_id]
-                if 'current_chat_id' in context.user_data:
-                    del context.user_data['current_chat_id']
-                
-                # Показываем выбранную страницу
-                await self.show_users_for_spam_from_message(update, context, chat_id, page_number - 1)
-                
-            except ValueError:
-                await update.message.reply_text(
-                    "❌ *Неверный формат номера страницы*\n\n"
-                    "💡 *Введите целое число больше 0*",
-                    parse_mode='Markdown'
-                )
-
-    async def show_users_for_spam_from_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, page: int):
-        """Показать пользователей чата для рассылки из текстового сообщения"""
-        user_id = update.message.from_user.id
-        db = DatabaseManager(user_id)
-        
-        users = db.get_users_by_chat(chat_id, page * 25, 25)
-        total_users = db.get_total_users_count(chat_id)
-        total_pages = (total_users + 24) // 25
-        
-        if not users:
-            await update.message.reply_text("❌ В этом чате нет пользователей!")
-            return
-        
-        chat_name = "Неизвестный чат"
-        chats = db.get_chats()
-        for cid, name in chats:
-            if cid == chat_id:
-                chat_name = name
-                break
-        
-        users_text = (
-            f"👥 *Чат: {chat_name}*\n"
-            f"📄 *Страница: {page + 1} из {total_pages}*\n"
-            f"👤 *Всего пользователей: {total_users}*\n\n"
-            f"💡 *Нажмите на кнопку с пользователем для отправки сообщения:*"
+        await query.edit_message_text(
+            format_spam_menu(user_id),
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
-        
-        keyboard = []
-        # Добавляем нумерованные кнопки пользователей
-        for index, (user_id_db, username) in enumerate(users):
-            user_number = page * 25 + index + 1  # Номер пользователя (начинается с 1)
-            variation_id, variation_text = db.get_random_variation()
-            if variation_text:
-                spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
-                keyboard.append([InlineKeyboardButton(
-                    f"{user_number}. 📨 {username}", 
-                    callback_data=f"spam_user_{chat_id}_{user_id_db}_{page}",
-                    url=spam_link
-                )])
-            else:
-                keyboard.append([InlineKeyboardButton(
-                    f"{user_number}. ❌ {username} (нет вариаций)", 
-                    callback_data="no_action"
-                )])
-        
-        # Навигационные кнопки
-        nav_buttons = []
-        if page > 0:
-            nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"spam_page_{chat_id}_{page-1}"))
-        
-        # Кнопка для ввода номера страницы
-        nav_buttons.append(InlineKeyboardButton("🔢 Перейти", callback_data="spam_goto"))
-        
-        if page < total_pages - 1:
-            nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"spam_page_{chat_id}_{page+1}"))
-        
-        if nav_buttons:
-            keyboard.append(nav_buttons)
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад к чатам", callback_data="main_spam")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(users_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def show_main_menu_from_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать главное меню из текстового сообщения"""
-        menu_text = (
-            "🎯 *Главное меню*\n\n"
-            "💡 *Выберите нужный раздел:*"
-        )
+    
+    elif data == "diagnose_issues":
+        """Диагностика проблем пользователя"""
+        diagnosis = diagnose_user_issues(user_id)
         
         keyboard = [
-            [InlineKeyboardButton("📝 Создание сообщений", callback_data="main_messages")],
-            [InlineKeyboardButton("👥 Мои пользователи", callback_data="main_users")],
-            [InlineKeyboardButton("🚀 Начать спам", callback_data="main_spam")]
+            [InlineKeyboardButton(f"{EMOJI['create']} Создать сообщения", callback_data="create_new_message")],
+            [InlineKeyboardButton(f"{EMOJI['add']} Добавить чат", callback_data="add_users")],
+            [InlineKeyboardButton(f"{EMOJI['spam']} Попробовать снова", callback_data="start_spam")],
+            [InlineKeyboardButton(f"{EMOJI['home']} Главное меню", callback_data="main_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    def run(self):
-        """Запуск бота"""
-        self.application.run_polling()
-
-# Запуск бота
-if __name__ == "__main__":
-    BOT_TOKEN = "8517379434:AAGqMYBuEQZ8EMNRf3g4yBN-Q0jpm5u5eZU"
+        await query.edit_message_text(
+            f"🔍 *ДИАГНОСТИКА ПРОБЛЕМ*\n\n"
+            f"*Статус для пользователя {user_id}:*\n\n"
+            f"{diagnosis}\n\n"
+            f"*Рекомендации:*\n"
+            f"1. Добавьте чаты с пользователями\n"
+            f"2. Создайте сообщения с вариациями\n"
+            f"3. Убедитесь, что в чатах есть пользователи",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
     
-    bot = SpamBot(BOT_TOKEN)
-    print("🤖 Бот запущен и готов к работе!")
-    print("💡 Используйте /start в Telegram для начала работы")
-    bot.run()
+    elif data.startswith("select_chat_"):
+        parts = data.split("_")
+        chat_id = int(parts[2])
+        page = int(parts[4])
+        
+        users = get_chat_users(chat_id)
+        if not users:
+            await query.edit_message_text(f"{EMOJI['warning']} В этом чате нет пользователей.")
+            return
+        
+        # Пагинация
+        users_per_page = 25
+        start_idx = page * users_per_page
+        end_idx = start_idx + users_per_page
+        page_users = users[start_idx:end_idx]
+        
+        # Получаем информацию о чате
+        chats = get_user_chats(user_id)
+        chat_name = next((name for cid, name in chats if cid == chat_id), "Неизвестный чат")
+        
+        keyboard = []
+        sent_count = 0
+        
+        for username in page_users:
+            variation = get_random_variation(user_id)
+            if variation:
+                var_id, var_text, send_count = variation
+                link = generate_telegram_link(var_text)
+                
+                # Создаем кнопку с ссылкой
+                button_text = f"{EMOJI['user']} {username}"
+                keyboard.append([InlineKeyboardButton(button_text, url=link)])
+                
+                # Обновляем счетчик отправок
+                increment_send_count(var_id)
+                if send_count + 1 >= 5:
+                    delete_used_variation(var_id)
+                
+                sent_count += 1
+        
+        # Кнопки навигации
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton(
+                f"{EMOJI['prev']} Назад", 
+                callback_data=f"select_chat_{chat_id}_page_{page-1}"
+            ))
+        
+        if end_idx < len(users):
+            nav_buttons.append(InlineKeyboardButton(
+                f"Вперед {EMOJI['next']}", 
+                callback_data=f"select_chat_{chat_id}_page_{page+1}"
+            ))
+        
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+        
+        keyboard.append([InlineKeyboardButton(f"{EMOJI['back']} Назад к чатам", callback_data="start_spam")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        page_info = f"""
+{EMOJI['chat']} *ЧАТ: {chat_name}*
+{EMOJI['user']} *Пользователи: {start_idx + 1}-{min(end_idx, len(users))} из {len(users)}*
+{EMOJI['link']} *Создано ссылок: {sent_count}*
+
+*Инструкция:*
+Нажмите на кнопку с пользователем, чтобы отправить сообщение
+        """.strip()
+        
+        await query.edit_message_text(
+            page_info,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
+# Обработчик текстовых сообщений
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    if user_id not in user_states:
+        await update.message.reply_text(
+            f"{EMOJI['info']} Используйте меню для взаимодействия с ботом.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{EMOJI['home']} Открыть меню", callback_data="main_menu")]
+            ])
+        )
+        return
+    
+    state = user_states[user_id]
+    
+    if state == "waiting_for_message":
+        # Генерация вариаций
+        try:
+            if not text:
+                await update.message.reply_text(f"{EMOJI['error']} Сообщение не может быть пустым!")
+                return
+            
+            await update.message.reply_text(f"{EMOJI['create']} Генерирую 500 вариаций... Это может занять несколько секунд.")
+            
+            # Генерируем вариации
+            variations = generate_variations(text, 500)
+            
+            # Сохраняем оригинальное сообщение
+            original_msg_id = add_original_message(user_id, text)
+            
+            # Сохраняем вариации
+            added_count = 0
+            for variation in variations:
+                add_message_variation(user_id, original_msg_id, variation)
+                added_count += 1
+            
+            # Очищаем состояние
+            del user_states[user_id]
+            
+            keyboard = [
+                [InlineKeyboardButton(f"{EMOJI['create']} Создать еще", callback_data="create_new_message")],
+                [InlineKeyboardButton(f"{EMOJI['home']} Главное меню", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                f"{EMOJI['success']} *УСПЕШНО СОЗДАНО!*\n\n"
+                f"• Исходное сообщение: '{text[:50]}...'\n"
+                f"• Добавлено вариаций: {added_count}\n"
+                f"• Всего доступно: {get_user_stats(user_id)['available_variations']}",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in message generation: {e}", exc_info=True)
+            del user_states[user_id]
+            
+            await update.message.reply_text(
+                f"{EMOJI['error']} *ОШИБКА!*\n\n"
+                f"Произошла ошибка при создании вариаций: {str(e)}\n\n"
+                "Попробуйте другое сообщение или обратитесь к разработчику.",
+                parse_mode='Markdown'
+            )
+    
+    elif state == "waiting_for_chat_name":
+        context.user_data['temp_chat_name'] = text
+        user_states[user_id] = "waiting_for_users"
+        
+        example_text = """user1
+user2
+user3"""
+        
+        await update.message.reply_text(
+            f"{EMOJI['add']} *ЧАТ СОХРАНЕН!*\n\n"
+            f"Теперь отправьте список пользователей:\n\n"
+            f"*Пример:*\n"
+            f"```\n{example_text}\n```\n\n"
+            f"{EMOJI['info']} Каждый пользователь с новой строки",
+            parse_mode='Markdown'
+        )
+    
+    elif state == "waiting_for_users":
+        chat_name = context.user_data.get('temp_chat_name')
+        if chat_name:
+            usernames = [line.strip() for line in text.split('\n') if line.strip()]
+            
+            chat_id = add_user_chat(user_id, chat_name)
+            add_chat_users(chat_id, usernames)
+            
+            del user_states[user_id]
+            del context.user_data['temp_chat_name']
+            
+            keyboard = [
+                [InlineKeyboardButton(f"{EMOJI['add']} Добавить еще", callback_data="add_users")],
+                [InlineKeyboardButton(f"{EMOJI['home']} Главное меню", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                f"{EMOJI['success']} *ПОЛЬЗОВАТЕЛИ ДОБАВЛЕНЫ!*\n\n"
+                f"• Чат: {chat_name}\n"
+                f"• Пользователей: {len(usernames)}\n"
+                f"• Всего чатов: {get_user_stats(user_id)['chats']}",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"{EMOJI['error']} Произошла ошибка. Попробуйте снова.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(f"{EMOJI['home']} Главное меню", callback_data="main_menu")]
+                ])
+            )
+
+# Основная функция
+def main():
+    # Ваш токен
+    application = Application.builder().token("8517379434:AAGqMYBuEQZ8EMNRf3g4yBN-Q0jpm5u5eZU").build()
+    
+    # Обработчики команд
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Запуск бота
+    print("Бот запущен...")
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
