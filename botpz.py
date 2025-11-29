@@ -254,6 +254,26 @@ class SpamBot:
             if user_id in self.user_states:
                 del self.user_states[user_id]
 
+    def validate_message(self, text: str) -> Tuple[bool, Optional[str]]:
+        """
+        Валидация сообщения для генерации вариаций
+        """
+        # Проверка минимальной длины
+        if len(text) < 10:
+            return False, "❌ *Сообщение слишком короткое*\n\n💡 *Минимальная длина: 10 символов*"
+        
+        # Жесткий лимит 120 символов
+        if len(text) > 120:
+            return False, "❌ *Сообщение слишком длинное*\n\n💡 *Максимальная длина: 120 символов*\n*Текущая длина: {} символов*".format(len(text))
+        
+        return True, None
+
+    def check_message_length(self, text: str) -> Tuple[bool, Optional[str]]:
+        """Проверка длины сообщения для URL"""
+        if len(text) > 120:
+            return False, f"❌ *Сообщение слишком длинное*\n\n💡 *Длина: {len(text)}/120 символов*"
+        return True, None
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
         user_id = update.effective_user.id
@@ -363,7 +383,8 @@ class SpamBot:
             create_text = (
                 "🆕 *Создание нового сообщения*\n\n"
                 "📨 *Введите исходное сообщение для создания вариаций:*\n\n"
-                "💡 *Бот автоматически создаст 500 уникальных вариаций*"
+                "💡 *Бот автоматически создаст 500 уникальных вариаций*\n"
+                "📏 *Лимит: 10-120 символов*"
             )
             await query.edit_message_text(create_text, parse_mode='Markdown')
         
@@ -415,23 +436,6 @@ class SpamBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(list_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    def validate_message(self, text: str) -> Tuple[bool, Optional[str]]:
-        """
-        Валидация сообщения для генерации вариаций
-        
-        Returns:
-            Tuple[bool, Optional[str]]: (is_valid, error_message)
-        """
-        # Проверка минимальной длины
-        if len(text) < 10:
-            return False, "❌ *Сообщение слишком короткое*\n\n💡 *Минимальная длина: 10 символов*"
-        
-        # Проверка максимальной длины
-        if len(text) > 1000:
-            return False, "❌ *Сообщение слишком длинное*\n\n💡 *Максимальная длина: 1000 символов*"
-        
-        return True, None
 
     async def generate_variations_with_timeout(self, text: str, count: int = 500) -> List[str]:
         """Генерация вариаций с ограничением по времени 5 секунд"""
@@ -726,6 +730,15 @@ class SpamBot:
                 if has_variations:
                     variation_id, variation_text = db.get_random_variation()
                     if variation_text:
+                        # Проверяем длину текста для URL
+                        is_valid, error_msg = self.check_message_length(variation_text)
+                        if not is_valid:
+                            keyboard.append([InlineKeyboardButton(
+                                f"❌ {username} (слишком длинное)", 
+                                callback_data="no_action"
+                            )])
+                            continue
+                            
                         spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
                         keyboard.append([InlineKeyboardButton(
                             f"📨 {username}", 
@@ -791,6 +804,12 @@ class SpamBot:
                 variation_id, variation_text = db.get_random_variation()
                 
                 if variation_text:
+                    # Проверяем длину текста для URL
+                    is_valid, error_msg = self.check_message_length(variation_text)
+                    if not is_valid:
+                        await query.answer(error_msg, show_alert=True)
+                        return
+                    
                     spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
                     
                     success_text = (
