@@ -262,6 +262,16 @@ class SpamBot:
         if len(text) < 10:
             return False, "❌ *Сообщение слишком короткое*\n\n💡 *Минимальная длина: 10 символов*"
         
+        # Жесткий лимит 120 символов
+        if len(text) > 120:
+            return False, "❌ *Сообщение слишком длинное*\n\n💡 *Максимальная длина: 120 символов*\n*Текущая длина: {} символов*".format(len(text))
+        
+        return True, None
+
+    def check_message_length(self, text: str) -> Tuple[bool, Optional[str]]:
+        """Проверка длины сообщения для URL"""
+        if len(text) > 120:
+            return False, f"❌ *Сообщение слишком длинное*\n\n💡 *Длина: {len(text)}/120 символов*"
         return True, None
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -374,7 +384,7 @@ class SpamBot:
                 "🆕 *Создание нового сообщения*\n\n"
                 "📨 *Введите исходное сообщение для создания вариаций:*\n\n"
                 "💡 *Бот автоматически создаст 500 уникальных вариаций*\n"
-                "⏱️ *Лимит времени на генерацию: 5 секунд*"
+                "📏 *Лимит: 10-120 символов*"
             )
             await query.edit_message_text(create_text, parse_mode='Markdown')
         
@@ -720,8 +730,16 @@ class SpamBot:
                 if has_variations:
                     variation_id, variation_text = db.get_random_variation()
                     if variation_text:
-                        # Используем короткий Telegram-протокол
-                        spam_link = f"tg://msg?text={quote(variation_text)}&to={username}"
+                        # Проверяем длину текста для URL
+                        is_valid, error_msg = self.check_message_length(variation_text)
+                        if not is_valid:
+                            keyboard.append([InlineKeyboardButton(
+                                f"❌ {username} (слишком длинное)", 
+                                callback_data="no_action"
+                            )])
+                            continue
+                            
+                        spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
                         keyboard.append([InlineKeyboardButton(
                             f"📨 {username}", 
                             callback_data=f"spam_user_{chat_id}_{user_id_db}_{page}",
@@ -738,7 +756,7 @@ class SpamBot:
                         f"❌ {username}", 
                         callback_data="no_action"
                     )])
-        
+            
             if has_variations:
                 users_text += f"✅ *Доступно для отправки: {active_users} пользователей*"
             
@@ -786,8 +804,13 @@ class SpamBot:
                 variation_id, variation_text = db.get_random_variation()
                 
                 if variation_text:
-                    # Используем короткий Telegram-протокол
-                    spam_link = f"tg://msg?text={quote(variation_text)}&to={username}"
+                    # Проверяем длину текста для URL
+                    is_valid, error_msg = self.check_message_length(variation_text)
+                    if not is_valid:
+                        await query.answer(error_msg, show_alert=True)
+                        return
+                    
+                    spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
                     
                     success_text = (
                         f"📨 *Сообщение отправлено!*\n\n"
