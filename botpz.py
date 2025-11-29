@@ -2,8 +2,10 @@ import logging
 import sqlite3
 import random
 import time
-from typing import Dict, List, Tuple
+import asyncio
+from typing import Dict, List, Tuple, Optional
 from urllib.parse import quote
+from threading import Lock
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -30,188 +32,201 @@ class DatabaseManager:
     def init_database(self):
         """Инициализация базы данных для пользователя"""
         try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            # Таблица для исходных сообщений
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    original_text TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Таблица для вариаций сообщений
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS variations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    message_id INTEGER,
-                    variation_text TEXT NOT NULL,
-                    send_count INTEGER DEFAULT 0,
-                    FOREIGN KEY (message_id) REFERENCES messages (id)
-                )
-            ''')
-            
-            # Таблица для чатов
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS chats (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE
-                )
-            ''')
-            
-            # Таблица для пользователей
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id INTEGER,
-                    username TEXT NOT NULL,
-                    FOREIGN KEY (chat_id) REFERENCES chats (id)
-                )
-            ''')
-            
-            conn.commit()
-            conn.close()
-            
+            with sqlite3.connect(self.db_name) as conn:
+                cursor = conn.cursor()
+                
+                # Таблица для исходных сообщений
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        original_text TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                # Таблица для вариаций сообщений
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS variations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        message_id INTEGER,
+                        variation_text TEXT NOT NULL,
+                        send_count INTEGER DEFAULT 0,
+                        FOREIGN KEY (message_id) REFERENCES messages (id)
+                    )
+                ''')
+                
+                # Таблица для чатов
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS chats (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL UNIQUE
+                    )
+                ''')
+                
+                # Таблица для пользователей
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chat_id INTEGER,
+                        username TEXT NOT NULL,
+                        FOREIGN KEY (chat_id) REFERENCES chats (id)
+                    )
+                ''')
+                
+                # Создаем индексы для улучшения производительности
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_variations_send_count ON variations(send_count)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_chat_id ON users(chat_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_variations_message_id ON variations(message_id)')
+                
         except Exception as e:
             logger.error(f"Ошибка инициализации БД: {e}")
             raise
 
     def add_message(self, original_text: str) -> int:
         """Добавление исходного сообщения"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('INSERT INTO messages (original_text) VALUES (?)', (original_text,))
-        message_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return message_id
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute('INSERT INTO messages (original_text) VALUES (?)', (original_text,))
+            message_id = cursor.lastrowid
+            return message_id
 
     def add_variations(self, message_id: int, variations: List[str]):
         """Добавление вариаций сообщения"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.executemany(
-            'INSERT INTO variations (message_id, variation_text) VALUES (?, ?)',
-            [(message_id, variation) for variation in variations]
-        )
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                'INSERT INTO variations (message_id, variation_text) VALUES (?, ?)',
+                [(message_id, variation) for variation in variations]
+            )
 
     def get_messages(self) -> List[Tuple[int, str]]:
         """Получение списка исходных сообщений"""
         try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            cursor.execute('SELECT id, original_text FROM messages ORDER BY created_at DESC')
-            messages = cursor.fetchall()
-            conn.close()
-            return messages
+            with sqlite3.connect(self.db_name) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT id, original_text FROM messages ORDER BY created_at DESC')
+                return cursor.fetchall()
         except Exception as e:
             logger.error(f"Ошибка получения сообщений: {e}")
             return []
 
     def delete_message(self, message_id: int):
         """Удаление сообщения и всех его вариаций"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM variations WHERE message_id = ?', (message_id,))
-        cursor.execute('DELETE FROM messages WHERE id = ?', (message_id,))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM variations WHERE message_id = ?', (message_id,))
+            cursor.execute('DELETE FROM messages WHERE id = ?', (message_id,))
 
     def add_chat(self, chat_name: str) -> int:
         """Добавление чата"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        try:
-            cursor.execute('INSERT INTO chats (name) VALUES (?)', (chat_name,))
-            chat_id = cursor.lastrowid
-        except sqlite3.IntegrityError:
-            cursor.execute('SELECT id FROM chats WHERE name = ?', (chat_name,))
-            chat_id = cursor.fetchone()[0]
-        conn.commit()
-        conn.close()
-        return chat_id
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute('INSERT INTO chats (name) VALUES (?)', (chat_name,))
+                chat_id = cursor.lastrowid
+            except sqlite3.IntegrityError:
+                cursor.execute('SELECT id FROM chats WHERE name = ?', (chat_name,))
+                chat_id = cursor.fetchone()[0]
+            return chat_id
 
     def add_users(self, chat_id: int, usernames: List[str]):
         """Добавление пользователей в чат"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.executemany(
-            'INSERT OR IGNORE INTO users (chat_id, username) VALUES (?, ?)',
-            [(chat_id, username.strip()) for username in usernames]
-        )
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                'INSERT OR IGNORE INTO users (chat_id, username) VALUES (?, ?)',
+                [(chat_id, username.strip()) for username in usernames]
+            )
 
     def get_chats(self) -> List[Tuple[int, str]]:
         """Получение списка чатов"""
         try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            cursor.execute('SELECT id, name FROM chats ORDER BY name')
-            chats = cursor.fetchall()
-            conn.close()
-            return chats
+            with sqlite3.connect(self.db_name) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT id, name FROM chats ORDER BY name')
+                return cursor.fetchall()
         except Exception as e:
             logger.error(f"Ошибка получения чатов: {e}")
             return []
 
     def delete_chat(self, chat_id: int):
         """Удаление чата и всех его пользователей"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM users WHERE chat_id = ?', (chat_id,))
-        cursor.execute('DELETE FROM chats WHERE id = ?', (chat_id,))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM users WHERE chat_id = ?', (chat_id,))
+            cursor.execute('DELETE FROM chats WHERE id = ?', (chat_id,))
 
     def get_users_by_chat(self, chat_id: int, offset: int = 0, limit: int = 25) -> List[Tuple[int, str]]:
         """Получение пользователей чата с пагинацией"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT id, username FROM users WHERE chat_id = ? LIMIT ? OFFSET ?',
-            (chat_id, limit, offset)
-        )
-        users = cursor.fetchall()
-        conn.close()
-        return users
-
-    def get_random_variation(self) -> Tuple[int, str]:
-        """Получение случайной вариации сообщения"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, variation_text FROM variations 
-            WHERE send_count < 5 
-            ORDER BY RANDOM() 
-            LIMIT 1
-        ''')
-        result = cursor.fetchone()
-        
-        if result:
-            variation_id, variation_text = result
-            # Увеличиваем счетчик отправок
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
             cursor.execute(
-                'UPDATE variations SET send_count = send_count + 1 WHERE id = ?',
-                (variation_id,)
+                'SELECT id, username FROM users WHERE chat_id = ? LIMIT ? OFFSET ?',
+                (chat_id, limit, offset)
             )
-            # Удаляем вариацию, если достигнут лимит
-            cursor.execute('DELETE FROM variations WHERE send_count >= 5')
-            conn.commit()
-            conn.close()
-            return variation_id, variation_text
-        
-        conn.close()
-        return None, None
+            return cursor.fetchall()
+
+    def get_users_count_by_chat(self, chat_id: int) -> int:
+        """Получение общего количества пользователей в чате"""
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) FROM users WHERE chat_id = ?', (chat_id,))
+                return cursor.fetchone()[0]
+        except Exception as e:
+            logger.error(f"Ошибка подсчета пользователей: {e}")
+            return 0
+
+    def get_chat_name(self, chat_id: int) -> str:
+        """Получение названия чата по ID"""
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT name FROM chats WHERE id = ?', (chat_id,))
+                result = cursor.fetchone()
+                return result[0] if result else "Неизвестный чат"
+        except Exception as e:
+            logger.error(f"Ошибка получения названия чата: {e}")
+            return "Ошибка загрузки"
+
+    def get_random_variation(self) -> Tuple[Optional[int], Optional[str]]:
+        """Получение случайной вариации сообщения"""
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, variation_text FROM variations 
+                WHERE send_count < 5 
+                ORDER BY RANDOM() 
+                LIMIT 1
+            ''')
+            result = cursor.fetchone()
+            
+            if result:
+                variation_id, variation_text = result
+                # Увеличиваем счетчик отправок
+                cursor.execute(
+                    'UPDATE variations SET send_count = send_count + 1 WHERE id = ?',
+                    (variation_id,)
+                )
+                # Удаляем только текущую вариацию если достигнут лимит
+                cursor.execute('DELETE FROM variations WHERE id = ? AND send_count >= 5', (variation_id,))
+                return variation_id, variation_text
+            
+            return None, None
+
+    def has_variations(self) -> bool:
+        """Проверка наличия вариаций"""
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM variations WHERE send_count < 5')
+            return cursor.fetchone()[0] > 0
+
 
 class SpamBot:
     def __init__(self, token: str):
         self.application = Application.builder().token(token).build()
         self.user_states = {}
+        self._state_lock = Lock()
         self.setup_handlers()
 
     def setup_handlers(self):
@@ -222,6 +237,22 @@ class SpamBot:
         self.application.add_handler(CallbackQueryHandler(self.handle_users, pattern="^users_"))
         self.application.add_handler(CallbackQueryHandler(self.handle_spam, pattern="^spam_"))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_input))
+
+    def set_user_state(self, user_id: int, state: str):
+        """Безопасная установка состояния пользователя"""
+        with self._state_lock:
+            self.user_states[user_id] = state
+
+    def get_user_state(self, user_id: int) -> Optional[str]:
+        """Безопасное получение состояния пользователя"""
+        with self._state_lock:
+            return self.user_states.get(user_id)
+
+    def delete_user_state(self, user_id: int):
+        """Безопасное удаление состояния пользователя"""
+        with self._state_lock:
+            if user_id in self.user_states:
+                del self.user_states[user_id]
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
@@ -328,11 +359,14 @@ class SpamBot:
         await query.answer()
         
         if data == "messages_create":
-            self.user_states[user_id] = "waiting_for_message"
+            self.set_user_state(user_id, "waiting_for_message")
             create_text = (
                 "🆕 *Создание нового сообщения*\n\n"
                 "📨 *Введите исходное сообщение для создания вариаций:*\n\n"
-                "💡 *Бот автоматически создаст 500 уникальных вариаций*"
+                "💡 *Бот автоматически создаст 500 уникальных вариаций*\n"
+                "⏱️ *Лимит времени на генерацию: 10 секунд*\n\n"
+                "⚠️ *Сообщение должно содержать символы для замены:*\n"
+                "`а, е, с, о, р, х, у` (русские и английские)"
             )
             await query.edit_message_text(create_text, parse_mode='Markdown')
         
@@ -385,22 +419,83 @@ class SpamBot:
         
         await query.edit_message_text(list_text, reply_markup=reply_markup, parse_mode='Markdown')
 
-    def generate_variations(self, text: str, count: int = 500) -> List[str]:
-        """Генерация вариаций сообщения"""
-        variations = set()
-        chars_to_replace = list(REPLACEMENTS.keys())
+    def validate_message(self, text: str) -> Tuple[bool, Optional[str]]:
+        """
+        Валидация сообщения для генерации вариаций
         
-        while len(variations) < count:
+        Returns:
+            Tuple[bool, Optional[str]]: (is_valid, error_message)
+        """
+        # Проверка минимальной длины
+        if len(text) < 10:
+            return False, "❌ *Сообщение слишком короткое*\n\n💡 *Минимальная длина: 10 символов*"
+        
+        # Проверка наличия символов для замены
+        has_replaceable_chars = any(char in REPLACEMENTS for char in text)
+        if not has_replaceable_chars:
+            error_msg = (
+                "❌ *Недостаточно символов для замены*\n\n"
+                "💡 *Сообщение должно содержать символы:*\n"
+                "`а, е, с, о, р, х, у` (русские)\n\n"
+                "✨ *Пример хорошего сообщения:*\n"
+                "`«Привет! Как дела?»`\n\n"
+                "🚫 *Пример плохого сообщения:*\n"
+                "`«Hi! How are you?»`"
+            )
+            return False, error_msg
+        
+        # Проверка максимальной длины
+        if len(text) > 1000:
+            return False, "❌ *Сообщение слишком длинное*\n\n💡 *Максимальная длина: 1000 символов*"
+        
+        return True, None
+
+    async def generate_variations_with_timeout(self, text: str, count: int = 500) -> List[str]:
+        """Генерация вариаций с ограничением по времени"""
+        try:
+            # Запускаем генерацию с таймаутом
+            variations = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None, self._generate_variations_sync, text, count
+                ),
+                timeout=10.0  # 10 секунд таймаут
+            )
+            return variations
+        except asyncio.TimeoutError:
+            logger.warning(f"Таймаут генерации вариаций для текста: {text[:50]}...")
+            raise TimeoutError("Генерация вариаций заняла слишком много времени (более 10 секунд)")
+
+    def _generate_variations_sync(self, text: str, count: int = 500) -> List[str]:
+        """Синхронная генерация вариаций (выполняется в отдельном потоке)"""
+        variations = set()
+        chars_to_replace = [char for char in text if char in REPLACEMENTS]
+        
+        if not chars_to_replace:
+            return []
+        
+        max_possible_variations = min(count, 2 ** len(chars_to_replace))
+        start_time = time.time()
+        
+        while len(variations) < max_possible_variations:
+            # Проверяем, не прошло ли уже 9 секунд (оставляем запас)
+            if time.time() - start_time > 9:
+                break
+                
             variation = list(text)
+            replacements_made = 0
+            
+            # Увеличиваем вероятность замены для большего разнообразия
             for i, char in enumerate(variation):
-                if char in REPLACEMENTS and random.random() < 0.3:
+                if char in REPLACEMENTS and random.random() < 0.5:  # 50% вероятность замены
                     variation[i] = REPLACEMENTS[char]
+                    replacements_made += 1
             
             variation_str = ''.join(variation)
-            if variation_str != text:
+            if variation_str != text and replacements_made > 0:
                 variations.add(variation_str)
             
-            if len(variations) >= min(count, 2 ** len([c for c in text if c in chars_to_replace])):
+            # Если долго не получается создать новые вариации, выходим
+            if len(variations) >= max_possible_variations:
                 break
         
         return list(variations)
@@ -437,7 +532,7 @@ class SpamBot:
         await query.answer()
         
         if data == "users_add":
-            self.user_states[user_id] = "waiting_for_chat_name"
+            self.set_user_state(user_id, "waiting_for_chat_name")
             add_text = (
                 "➕ *Добавление пользователей*\n\n"
                 "🏷️ *Напишите название чата из которого взяли пользователей:*\n\n"
@@ -493,7 +588,7 @@ class SpamBot:
         
         await query.edit_message_text(list_text, reply_markup=reply_markup, parse_mode='Markdown')
 
-    # РАЗДЕЛ НАЧАТЬ СПАМ - ИСПРАВЛЕННАЯ ВЕРСИЯ
+    # РАЗДЕЛ НАЧАТЬ СПАМ
     async def show_spam_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Меню рассылки"""
         query = update.callback_query
@@ -598,47 +693,80 @@ class SpamBot:
             
             db = DatabaseManager(user_id)
             
-            users = db.get_users_by_chat(chat_id, page * 25, 25)
-            total_users = len(db.get_users_by_chat(chat_id, 0, 1000))
-            
-            if not users:
-                await query.answer("❌ В этом чате нет пользователей!")
-                await self.show_spam_menu(update, context)
+            # Проверяем существование чата
+            chat_name = db.get_chat_name(chat_id)
+            if chat_name == "Ошибка загрузки":
+                await query.edit_message_text(
+                    "❌ *Чат не найден*\n\n"
+                    "💡 *Вернитесь к списку чатов*",
+                    parse_mode='Markdown'
+                )
                 return
             
-            chat_name = "Неизвестный чат"
-            chats = db.get_chats()
-            for cid, name in chats:
-                if cid == chat_id:
-                    chat_name = name
-                    break
+            # Получаем пользователей с пагинацией
+            users = db.get_users_by_chat(chat_id, page * 25, 25)
+            total_users = db.get_users_count_by_chat(chat_id)
+            
+            if not users:
+                no_users_text = (
+                    f"👥 *Чат: {chat_name}*\n\n"
+                    "📭 *В этом чате нет пользователей*\n\n"
+                    "💡 *Добавьте пользователей через раздел «👥 Мои пользователи»*"
+                )
+                keyboard = [[InlineKeyboardButton("🔙 Назад к чатам", callback_data="main_spam")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(no_users_text, reply_markup=reply_markup, parse_mode='Markdown')
+                return
+            
+            # Проверяем наличие вариаций
+            has_variations = db.has_variations()
             
             users_text = (
                 f"👥 *Чат: {chat_name}*\n"
-                f"📄 *Страница: {page + 1}*\n\n"
-                f"💡 *Нажмите на кнопку с пользователем для отправки сообщения:*\n\n"
-                f"✅ *Доступно для отправки: {len(users)} пользователей*"
+                f"📄 *Страница: {page + 1} из {((total_users - 1) // 25) + 1}*\n"
+                f"👤 *Всего пользователей: {total_users}*\n\n"
             )
             
+            if not has_variations:
+                users_text += "❌ *Нет доступных вариаций сообщений!*\n💡 *Создайте сообщения в разделе «📝 Создание сообщений»*\n\n"
+            else:
+                users_text += "💡 *Нажмите на кнопку с пользователем для отправки сообщения:*\n\n"
+            
             keyboard = []
+            active_users = 0
+            
             for user_id_db, username in users:
-                variation_id, variation_text = db.get_random_variation()
-                if variation_text:
-                    spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
-                    keyboard.append([InlineKeyboardButton(
-                        f"📨 {username}", 
-                        callback_data=f"spam_user_{chat_id}_{user_id_db}_{page}",
-                        url=spam_link
-                    )])
+                if has_variations:
+                    variation_id, variation_text = db.get_random_variation()
+                    if variation_text:
+                        spam_link = f"https://t.me/{username}?text={quote(variation_text)}"
+                        keyboard.append([InlineKeyboardButton(
+                            f"📨 {username}", 
+                            callback_data=f"spam_user_{chat_id}_{user_id_db}_{page}",
+                            url=spam_link
+                        )])
+                        active_users += 1
+                    else:
+                        keyboard.append([InlineKeyboardButton(
+                            f"❌ {username} (нет вариаций)", 
+                            callback_data="no_action"
+                        )])
                 else:
                     keyboard.append([InlineKeyboardButton(
-                        f"❌ {username} (нет вариаций)", 
+                        f"❌ {username}", 
                         callback_data="no_action"
                     )])
             
+            if has_variations:
+                users_text += f"✅ *Доступно для отправки: {active_users} пользователей*"
+            
+            # Навигация
             nav_buttons = []
             if page > 0:
                 nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"spam_page_{chat_id}_{page-1}"))
+            
+            nav_buttons.append(InlineKeyboardButton(f"{page + 1}", callback_data="no_action"))
+            
             if (page + 1) * 25 < total_users:
                 nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"spam_page_{chat_id}_{page+1}"))
             
@@ -652,11 +780,11 @@ class SpamBot:
             
         except Exception as e:
             logger.error(f"Ошибка в show_users_for_spam: {e}")
-            await query.edit_message_text(
+            error_text = (
                 "❌ *Ошибка при загрузке пользователей*\n\n"
-                "💡 *Попробуйте еще раз*",
-                parse_mode='Markdown'
+                "💡 *Попробуйте еще раз или проверьте базу данных*"
             )
+            await query.edit_message_text(error_text, parse_mode='Markdown')
 
     async def send_spam_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id_db: int, chat_id: int, page: int):
         """Отправка спам-сообщения"""
@@ -668,7 +796,7 @@ class SpamBot:
         try:
             db = DatabaseManager(user_id)
             
-            users = db.get_users_by_chat(chat_id, 0, 1000)
+            users = db.get_users_by_chat(chat_id, page * 25, 25)
             target_user = next((user for user in users if user[0] == user_id_db), None)
             
             if target_user:
@@ -708,9 +836,10 @@ class SpamBot:
     async def handle_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик текстового ввода"""
         user_id = update.message.from_user.id
-        text = update.message.text
+        text = update.message.text.strip()
         
-        if user_id not in self.user_states:
+        current_state = self.get_user_state(user_id)
+        if not current_state:
             help_text = (
                 "💡 *Используйте кнопки меню для навигации*\n\n"
                 "🔍 *Если вы потерялись, нажмите /start*"
@@ -718,32 +847,71 @@ class SpamBot:
             await update.message.reply_text(help_text, parse_mode='Markdown')
             return
         
-        state = self.user_states[user_id]
         db = DatabaseManager(user_id)
         
         try:
-            if state == "waiting_for_message":
+            if current_state == "waiting_for_message":
+                # Валидация сообщения
+                is_valid, error_message = self.validate_message(text)
+                if not is_valid:
+                    await update.message.reply_text(error_message, parse_mode='Markdown')
+                    return
+                
                 await update.message.reply_text("⏳ *Генерирую вариации...*", parse_mode='Markdown')
                 
-                variations = self.generate_variations(text, 500)
-                message_id = db.add_message(text)
-                db.add_variations(message_id, variations)
-                
-                del self.user_states[user_id]
-                
-                success_text = (
-                    f"✅ *Успешно создано!*\n\n"
-                    f"📊 *Создано вариаций:* {len(variations)}\n"
-                    f"💬 *Исходное сообщение:* {text}\n\n"
-                    f"💡 *Теперь вы можете начать рассылку*"
-                )
-                
-                await update.message.reply_text(success_text, parse_mode='Markdown')
-                await self.show_main_menu_from_message(update, context)
+                try:
+                    # Генерация с таймаутом
+                    variations = await self.generate_variations_with_timeout(text, 500)
+                    
+                    if not variations:
+                        await update.message.reply_text(
+                            "❌ *Не удалось создать вариации*\n\n"
+                            "💡 *Попробуйте другое сообщение с большим количеством символов для замены*",
+                            parse_mode='Markdown'
+                        )
+                        return
+                    
+                    message_id = db.add_message(text)
+                    db.add_variations(message_id, variations)
+                    
+                    self.delete_user_state(user_id)
+                    
+                    success_text = (
+                        f"✅ *Успешно создано!*\n\n"
+                        f"📊 *Создано вариаций:* {len(variations)}\n"
+                        f"💬 *Исходное сообщение:* {text}\n\n"
+                        f"💡 *Теперь вы можете начать рассылку*"
+                    )
+                    
+                    await update.message.reply_text(success_text, parse_mode='Markdown')
+                    await self.show_main_menu_from_message(update, context)
+                    
+                except TimeoutError:
+                    self.delete_user_state(user_id)
+                    await update.message.reply_text(
+                        "❌ *Генерация заняла слишком много времени*\n\n"
+                        "💡 *Попробуйте более короткое сообщение или сообщение с меньшим количеством символов для замены*",
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    self.delete_user_state(user_id)
+                    logger.error(f"Ошибка генерации вариаций: {e}")
+                    await update.message.reply_text(
+                        "❌ *Произошла ошибка при генерации вариаций*\n\n"
+                        "💡 *Попробуйте еще раз*",
+                        parse_mode='Markdown'
+                    )
             
-            elif state == "waiting_for_chat_name":
+            elif current_state == "waiting_for_chat_name":
+                if not text:
+                    await update.message.reply_text(
+                        "❌ *Название чата не может быть пустым*",
+                        parse_mode='Markdown'
+                    )
+                    return
+                
                 context.user_data['current_chat_name'] = text
-                self.user_states[user_id] = "waiting_for_users"
+                self.set_user_state(user_id, "waiting_for_users")
                 
                 users_text = (
                     f"🏷️ *Название чата сохранено:* {text}\n\n"
@@ -753,21 +921,21 @@ class SpamBot:
                 
                 await update.message.reply_text(users_text, parse_mode='Markdown')
             
-            elif state == "waiting_for_users":
+            elif current_state == "waiting_for_users":
                 chat_name = context.user_data.get('current_chat_name')
                 usernames = text.split('\n')
                 
                 cleaned_usernames = []
                 for username in usernames:
                     cleaned = username.strip().lstrip('@')
-                    if cleaned:
+                    if cleaned and len(cleaned) >= 5:  # Минимальная длина username
                         cleaned_usernames.append(cleaned)
                 
                 if cleaned_usernames:
                     chat_id = db.add_chat(chat_name)
                     db.add_users(chat_id, cleaned_usernames)
                     
-                    del self.user_states[user_id]
+                    self.delete_user_state(user_id)
                     if 'current_chat_name' in context.user_data:
                         del context.user_data['current_chat_name']
                     
@@ -782,8 +950,8 @@ class SpamBot:
                     await self.show_main_menu_from_message(update, context)
                 else:
                     error_text = (
-                        "❌ *Список пользователей пуст*\n\n"
-                        "💡 *Отправьте список username'ов в столбик*"
+                        "❌ *Список пользователей пуст или содержит некорректные username*\n\n"
+                        "💡 *Отправьте список username'ов в столбик (минимум 5 символов)*"
                     )
                     await update.message.reply_text(error_text, parse_mode='Markdown')
                     
@@ -817,7 +985,8 @@ class SpamBot:
 
 # Запуск бота
 if __name__ == "__main__":
-    BOT_TOKEN = "8517379434:AAGqMYBuEQZ8EMNRf3g4yBN-Q0jpm5u5eZU"
+    import os
+    BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "8517379434:AAGqMYBuEQZ8EMNRf3g4yBN-Q0jpm5u5eZU")
     
     bot = SpamBot(BOT_TOKEN)
     print("🤖 Бот запущен и готов к работе!")
