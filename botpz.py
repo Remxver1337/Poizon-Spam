@@ -442,7 +442,7 @@ class SpamBot:
         menu_text = (
             "🚀 Начать рассылку\n\n"
             "📋 Выберите чат для рассылки:\n\n"
-            "💡 После выбора чата откроется список пользователей со ссылками"
+            "💡 После выбора чата откроется список пользователей (1 ссылка на страницу)"
         )
         
         keyboard = []
@@ -464,13 +464,13 @@ class SpamBot:
                 parts = data.split("_")
                 chat_id = int(parts[2])
                 page = int(parts[3])
-                await self.show_users_for_spam(update, context, chat_id, page)
+                await self.show_user_link(update, context, chat_id, page)
             
             elif data.startswith("spam_page_"):
                 parts = data.split("_")
                 chat_id = int(parts[2])
                 page = int(parts[3])
-                await self.show_users_for_spam(update, context, chat_id, page)
+                await self.show_user_link(update, context, chat_id, page)
             
             elif data == "spam_back":
                 await self.show_spam_menu(update, context)
@@ -479,8 +479,8 @@ class SpamBot:
             logger.error(f"Ошибка в handle_spam: {e}")
             await query.answer(f"Ошибка: {str(e)}")
 
-    async def show_users_for_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, page: int = 0):
-        """Показать пользователей чата со ссылками - БЕЗ MARKDOWN"""
+    async def show_user_link(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, page: int = 0):
+        """Показать ОДНУ ссылку на страницу"""
         query = update.callback_query
         user_id = query.from_user.id
         
@@ -488,15 +488,19 @@ class SpamBot:
         
         try:
             db = DatabaseManager(user_id)
-            users = db.get_users_by_chat(chat_id, page * 10, 10)  # Уменьшил до 10 на страницу
+            
+            # Получаем только ОДНОГО пользователя для этой страницы
+            users = db.get_users_by_chat(chat_id, page, 1)
             
             if not users:
                 keyboard = [[InlineKeyboardButton("🔙 Назад к чатам", callback_data="main_spam")]]
                 await query.edit_message_text(
-                    "❌ В этом чате нет пользователей",
+                    "✅ Все пользователи обработаны!",
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
                 return
+            
+            user_id_db, username = users[0]
             
             chat_name = "Неизвестный чат"
             chats = db.get_chats()
@@ -505,22 +509,22 @@ class SpamBot:
                     chat_name = name
                     break
             
-            # Фиксированный текст для всех
+            # Фиксированный текст
             message_text = "привет, тебе нужна скидка на пойзон? я в пойзон феникс выйграл в гиве (бесплатная доставка и скидка 25% на заказ) я бесплатно отдаю если что, в чате бейби мело увидел тебя"
             
-            # Формируем сообщение БЕЗ Markdown - просто текст со ссылками
+            # Создаем ссылку
+            link = f"https://t.me/{username}?text={quote(message_text)}"
+            
+            # Формируем сообщение с ОДНОЙ ссылкой
             text = f"👥 Чат: {chat_name}\n"
-            text += f"📄 Страница: {page + 1}\n\n"
-            text += "🔗 Ссылки для рассылки:\n\n"
+            text += f"📄 Пользователь: {page + 1}\n\n"
+            text += "🔗 Ссылка для рассылки:\n\n"
+            text += f"👤 Username: {username}\n"
+            text += f"🔗 {link}\n\n"
+            text += "💡 Скопируйте ссылку и отправьте пользователю"
             
-            for i, (user_id_db, username) in enumerate(users, 1):
-                link = f"https://t.me/{username}?text={quote(message_text)}"
-                text += f"{i}. 👤 {username}\n"
-                text += f"🔗 {link}\n\n"
-            
-            total_users = len(db.get_users_by_chat(chat_id, 0, 1000))
-            text += f"📊 Пользователей: {len(users)} из {total_users}\n\n"
-            text += "💡 Копируйте ссылки и отправляйте пользователям"
+            # Получаем общее количество пользователей для навигации
+            total_users = len(db.get_users_by_chat(chat_id, 0, 10000))
             
             # Создаем кнопки навигации
             keyboard = []
@@ -528,18 +532,19 @@ class SpamBot:
             # Кнопки навигации
             nav_buttons = []
             if page > 0:
-                nav_buttons.append(InlineKeyboardButton("◀️ Пред", callback_data=f"spam_page_{chat_id}_{page-1}"))
+                nav_buttons.append(InlineKeyboardButton("◀️ Предыдущий", callback_data=f"spam_page_{chat_id}_{page-1}"))
             
-            if (page + 1) * 10 < total_users:
-                nav_buttons.append(InlineKeyboardButton("След ▶️", callback_data=f"spam_page_{chat_id}_{page+1}"))
+            nav_buttons.append(InlineKeyboardButton(f"{page + 1}/{total_users}", callback_data="no_action"))
+            
+            if page + 1 < total_users:
+                nav_buttons.append(InlineKeyboardButton("Следующий ▶️", callback_data=f"spam_page_{chat_id}_{page+1}"))
             
             if nav_buttons:
                 keyboard.append(nav_buttons)
             
-            keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data=f"spam_chat_{chat_id}_{page}")])
+            keyboard.append([InlineKeyboardButton("🔄 Новая ссылка", callback_data=f"spam_chat_{chat_id}_{page}")])
             keyboard.append([InlineKeyboardButton("🔙 Назад к чатам", callback_data="main_spam")])
             
-            # Отправляем БЕЗ parse_mode='Markdown'
             await query.edit_message_text(
                 text,
                 reply_markup=InlineKeyboardMarkup(keyboard),
