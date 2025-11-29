@@ -188,6 +188,30 @@ class DatabaseManager:
         conn.close()
         return None, None
 
+    def get_multiple_variations(self, count: int = 5) -> List[str]:
+        """Получение нескольких случайных вариаций"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT variation_text FROM variations 
+            WHERE send_count < 5 
+            ORDER BY RANDOM() 
+            LIMIT ?
+        ''', (count,))
+        results = cursor.fetchall()
+        conn.close()
+        
+        variations = [result[0] for result in results]
+        
+        # Если не хватает вариаций, дублируем существующие
+        while len(variations) < count:
+            if variations:
+                variations.append(random.choice(variations))
+            else:
+                break
+        
+        return variations
+
 class SpamBot:
     def __init__(self, token: str):
         self.application = Application.builder().token(token).build()
@@ -531,15 +555,20 @@ class SpamBot:
                     chat_name = name
                     break
             
-            # Получаем случайную вариацию текста
-            variation_id, message_text = db.get_random_variation()
-            if not message_text:
-                # Если нет вариаций, берем первое сообщение из базы
-                messages = db.get_messages()
-                if messages:
-                    message_text = messages[0][1]
-                else:
-                    message_text = "Сообщение не создано"
+            # Получаем несколько случайных вариаций для разных пользователей
+            variations = db.get_multiple_variations(5)
+            
+            # Если нет вариаций, показываем сообщение
+            if not variations:
+                keyboard = [
+                    [InlineKeyboardButton("📝 Создать сообщение", callback_data="main_messages")],
+                    [InlineKeyboardButton("🔙 Назад к чатам", callback_data="main_spam")]
+                ]
+                await query.edit_message_text(
+                    "❌ Нет созданных сообщений!\n\nСначала создайте сообщения в разделе 'Создание сообщений'",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return
             
             # Формируем сообщение с кликабельными ссылками в никах
             text = f"👥 Чат: {chat_name}\n"
@@ -549,9 +578,12 @@ class SpamBot:
             # Создаем клавиатуру с кнопками-ссылками
             keyboard = []
             
-            for user_id_db, username in users:
+            for i, (user_id_db, username) in enumerate(users):
+                # Берем вариацию для этого пользователя (по кругу если вариаций меньше)
+                variation_text = variations[i % len(variations)]
+                
                 # Создаем ссылку для этого пользователя
-                link = f"https://t.me/{username}?text={quote(message_text)}"
+                link = f"https://t.me/{username}?text={quote(variation_text)}"
                 
                 # Создаем кнопку с ником, но скрытой ссылкой
                 keyboard.append([
@@ -577,11 +609,11 @@ class SpamBot:
             if nav_buttons:
                 keyboard.append(nav_buttons)
             
-            keyboard.append([InlineKeyboardButton("🔄 Обновить ссылки", callback_data=f"spam_chat_{chat_id}_{page}")])
+            keyboard.append([InlineKeyboardButton("🔄 Новые вариации", callback_data=f"spam_chat_{chat_id}_{page}")])
             keyboard.append([InlineKeyboardButton("🔙 Назад к чатам", callback_data="main_spam")])
             
             text += f"\n📊 Пользователей: {len(users)} из {total_users}"
-            text += f"\n💬 Текст: {message_text[:50]}{'...' if len(message_text) > 50 else ''}"
+            text += f"\n💬 Используются разные вариации текста"
             text += "\n\n💡 Нажимайте на имена для отправки сообщений"
             
             await query.edit_message_text(
