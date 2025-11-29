@@ -1,6 +1,7 @@
 import logging
 import sqlite3
 import random
+import time
 from typing import Dict, List, Tuple
 from urllib.parse import quote
 
@@ -298,7 +299,7 @@ class SpamBot:
             create_text = (
                 "🆕 *Создание нового сообщения*\n\n"
                 "📨 *Введите исходное сообщение для создания вариаций:*\n\n"
-                "💡 *Бот автоматически создаст 500 уникальных вариаций*"
+                "💡 *Бот автоматически создаст вариации (максимум за 2 секунды)*"
             )
             await query.edit_message_text(create_text, parse_mode='Markdown')
         
@@ -349,22 +350,30 @@ class SpamBot:
         await query.edit_message_text(list_text, reply_markup=reply_markup, parse_mode='Markdown')
 
     def generate_variations(self, text: str, count: int = 500) -> List[str]:
-        """Генерация вариаций сообщения"""
+        """Генерация вариаций сообщения с лимитом 2 секунды"""
         variations = set()
         chars_to_replace = list(REPLACEMENTS.keys())
+        start_time = time.time()
+        
+        # Добавляем оригинальный текст как первую вариацию
+        variations.add(text)
         
         while len(variations) < count:
+            # Проверяем время выполнения
+            if time.time() - start_time > 2:  # 2 секунды лимит
+                break
+                
             variation = list(text)
+            changes_made = False
+            
             for i, char in enumerate(variation):
                 if char in REPLACEMENTS and random.random() < 0.3:
                     variation[i] = REPLACEMENTS[char]
+                    changes_made = True
             
             variation_str = ''.join(variation)
-            if variation_str != text:
+            if changes_made and variation_str != text:
                 variations.add(variation_str)
-            
-            if len(variations) >= min(count, 2 ** len([c for c in text if c in chars_to_replace])):
-                break
         
         return list(variations)
 
@@ -472,7 +481,7 @@ class SpamBot:
         menu_text = (
             "🚀 *Начать рассылку*\n\n"
             "📋 *Выберите чат для рассылки:*\n\n"
-            "💡 *После выбора чата откроется список пользователей с готовыми ссылками*"
+            "💡 *После выбора чата откроется список пользователей с кликабельными ссылками*"
         )
         
         keyboard = []
@@ -496,18 +505,16 @@ class SpamBot:
             page = int(parts[3])
             await self.show_users_for_spam(update, context, chat_id, page)
         
-        elif data.startswith("spam_user_"):
-            parts = data.split("_")
-            chat_id = int(parts[2])
-            user_id_for_spam = int(parts[3])
-            page = int(parts[4])
-            await self.send_spam_message(update, context, user_id_for_spam, chat_id, page)
-        
         elif data.startswith("spam_page_"):
             parts = data.split("_")
             chat_id = int(parts[2])
             page = int(parts[3])
             await self.show_users_for_spam(update, context, chat_id, page)
+        
+        elif data.startswith("spam_export_"):
+            parts = data.split("_")
+            chat_id = int(parts[2])
+            await self.export_all_links(update, context, chat_id)
         
         elif data == "spam_back":
             await self.show_spam_menu(update, context)
@@ -519,15 +526,15 @@ class SpamBot:
             return f"https://t.me/{username}?text={encoded_text}"
         except Exception as e:
             logger.error(f"Ошибка при создании ссылки: {e}")
-            return None
+            return f"https://t.me/{username}"
 
     async def show_users_for_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, page: int = 0):
-        """Показать пользователей чата с готовыми ссылками"""
+        """Показать пользователей чата с кликабельными ссылками в никах"""
         query = update.callback_query
         user_id = query.from_user.id
         db = DatabaseManager(user_id)
         
-        users = db.get_users_by_chat(chat_id, page * 10, 10)  # Уменьшил количество для лучшего отображения
+        users = db.get_users_by_chat(chat_id, page * 15, 15)  # 15 пользователей на страницу
         total_users = len(db.get_users_by_chat(chat_id, 0, 1000))
         
         if not users:
@@ -541,32 +548,34 @@ class SpamBot:
                 chat_name = name
                 break
         
-        # Собираем сообщение со ссылками
+        # Собираем сообщение с кликабельными ссылками
         message_text = f"👥 *Чат: {chat_name}*\n"
         message_text += f"📄 *Страница: {page + 1}*\n\n"
-        message_text += "🔗 *Готовые ссылки для рассылки:*\n\n"
+        message_text += "🔗 *Кликабельные ссылки для рассылки:*\n\n"
         
-        valid_links_count = 0
+        # Получаем случайную вариацию для всех пользователей
+        variation_id, variation_text = db.get_random_variation()
+        if not variation_text:
+            # Если нет вариаций, используем первое сообщение из базы
+            messages = db.get_messages()
+            if messages:
+                variation_text = messages[0][1]  # Берем текст первого сообщения
+            else:
+                variation_text = "Привет! 👋"  # Запасной текст
         
         for i, (user_id_db, username) in enumerate(users, 1):
-            variation_id, variation_text = db.get_random_variation()
+            spam_link = self.create_spam_link(username, variation_text)
             
-            if variation_text:
-                spam_link = self.create_spam_link(username, variation_text)
-                
-                if spam_link:
-                    # Форматируем ссылку для красивого отображения
-                    message_text += f"{i}. 👤 *{username}*\n"
-                    message_text += f"🔗 `{spam_link}`\n"
-                    message_text += f"💬 *Текст:* {variation_text[:100]}{'...' if len(variation_text) > 100 else ''}\n\n"
-                    valid_links_count += 1
-                else:
-                    message_text += f"{i}. 👤 *{username}* ❌ (ошибка создания ссылки)\n\n"
-            else:
-                message_text += f"{i}. 👤 *{username}* ❌ (нет вариаций)\n\n"
+            # Создаем кликабельную ссылку в формате Markdown
+            message_text += f"{i}. 👤 [{username}]({spam_link})"
+            
+            # Добавляем короткую информацию о тексте
+            short_text = variation_text[:30] + "..." if len(variation_text) > 30 else variation_text
+            message_text += f" - `{short_text}`\n"
         
-        message_text += f"✅ *Доступно ссылок: {valid_links_count} из {len(users)}*\n\n"
-        message_text += "💡 *Скопируйте ссылки и отправляйте пользователям*"
+        message_text += f"\n📊 *Пользователей: {len(users)} из {total_users}*\n"
+        message_text += f"💬 *Текст сообщения:* {variation_text[:80]}{'...' if len(variation_text) > 80 else ''}\n\n"
+        message_text += "💡 *Нажимайте на ники для отправки сообщений*"
         
         # Создаем клавиатуру для навигации
         keyboard = []
@@ -574,63 +583,31 @@ class SpamBot:
         # Кнопки навигации
         nav_buttons = []
         if page > 0:
-            nav_buttons.append(InlineKeyboardButton("◀️ Предыдущая", callback_data=f"spam_page_{chat_id}_{page-1}"))
-        if (page + 1) * 10 < total_users:
-            nav_buttons.append(InlineKeyboardButton("Следующая ▶️", callback_data=f"spam_page_{chat_id}_{page+1}"))
+            nav_buttons.append(InlineKeyboardButton("◀️ Пред", callback_data=f"spam_page_{chat_id}_{page-1}"))
+        
+        nav_buttons.append(InlineKeyboardButton(f"{page + 1}", callback_data="no_action"))
+        
+        if (page + 1) * 15 < total_users:
+            nav_buttons.append(InlineKeyboardButton("След ▶️", callback_data=f"spam_page_{chat_id}_{page+1}"))
         
         if nav_buttons:
             keyboard.append(nav_buttons)
         
         # Дополнительные кнопки
         keyboard.extend([
-            [InlineKeyboardButton("🔄 Обновить ссылки", callback_data=f"spam_chat_{chat_id}_{page}")],
-            [InlineKeyboardButton("📋 Экспорт всех ссылок", callback_data=f"spam_export_{chat_id}")],
+            [InlineKeyboardButton("🔄 Новый текст", callback_data=f"spam_chat_{chat_id}_{page}")],
+            [InlineKeyboardButton("📋 Экспорт ссылок", callback_data=f"spam_export_{chat_id}")],
             [InlineKeyboardButton("🔙 Назад к чатам", callback_data="main_spam")]
         ])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    async def send_spam_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id_db: int, chat_id: int, page: int):
-        """Отправка информации о спам-сообщении"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        db = DatabaseManager(user_id)
-        
-        users = db.get_users_by_chat(chat_id, 0, 1000)
-        target_user = next((user for user in users if user[0] == user_id_db), None)
-        
-        if target_user:
-            username = target_user[1]
-            variation_id, variation_text = db.get_random_variation()
-            
-            if variation_text:
-                spam_link = self.create_spam_link(username, variation_text)
-                
-                if spam_link:
-                    await query.answer(f"✅ Ссылка для {username} скопирована!")
-                    
-                    # Отправляем отдельное сообщение с ссылкой
-                    link_message = (
-                        f"🔗 *Готовая ссылка для отправки:*\n\n"
-                        f"👤 *Пользователь:* {username}\n"
-                        f"💬 *Текст:* {variation_text}\n\n"
-                        f"*Ссылка:*\n`{spam_link}`\n\n"
-                        f"💡 *Скопируйте ссылку и отправьте пользователю*"
-                    )
-                    
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=link_message,
-                        parse_mode='Markdown'
-                    )
-                else:
-                    await query.answer("❌ Ошибка при создании ссылки!")
-            else:
-                await query.answer("❌ Нет доступных вариаций сообщений!")
-        else:
-            await query.answer("❌ Пользователь не найден!")
+        await query.edit_message_text(
+            message_text, 
+            reply_markup=reply_markup, 
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
 
     async def export_all_links(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         """Экспорт всех ссылок для чата"""
@@ -653,38 +630,51 @@ class SpamBot:
         
         await query.answer("⏳ Генерирую ссылки...")
         
+        # Получаем несколько разных вариаций для экспорта
+        variations = []
+        for _ in range(min(5, len(users))):
+            variation_id, variation_text = db.get_random_variation()
+            if variation_text:
+                variations.append(variation_text)
+        
+        if not variations:
+            messages = db.get_messages()
+            if messages:
+                variations = [messages[0][1]]
+            else:
+                variations = ["Привет! 👋"]
+        
         # Разбиваем на несколько сообщений если ссылок много
-        all_links_text = f"📋 *Все ссылки для чата: {chat_name}*\n\n"
-        current_message = all_links_text
         message_count = 1
+        current_message = f"📋 *Все ссылки для чата: {chat_name}*\n\n"
         
         for i, (user_id_db, username) in enumerate(users, 1):
-            variation_id, variation_text = db.get_random_variation()
+            # Используем разные вариации по кругу
+            variation_text = variations[(i - 1) % len(variations)]
+            spam_link = self.create_spam_link(username, variation_text)
             
-            if variation_text:
-                spam_link = self.create_spam_link(username, variation_text)
-                
-                if spam_link:
-                    link_entry = f"{i}. 👤 {username}\n{spam_link}\n\n"
-                    
-                    # Если сообщение становится слишком длинным, отправляем текущее и начинаем новое
-                    if len(current_message + link_entry) > 4000:
-                        await context.bot.send_message(
-                            chat_id=user_id,
-                            text=current_message,
-                            parse_mode='Markdown'
-                        )
-                        message_count += 1
-                        current_message = f"📋 *Все ссылки для чата: {chat_name} (продолжение {message_count})*\n\n{link_entry}"
-                    else:
-                        current_message += link_entry
+            link_entry = f"{i}. 👤 [{username}]({spam_link}) - `{variation_text[:30]}{'...' if len(variation_text) > 30 else ''}`\n"
+            
+            # Если сообщение становится слишком длинным, отправляем текущее и начинаем новое
+            if len(current_message + link_entry) > 4000:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=current_message,
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+                message_count += 1
+                current_message = f"📋 *Все ссылки для чата: {chat_name} (продолжение {message_count})*\n\n{link_entry}"
+            else:
+                current_message += link_entry
         
         # Отправляем оставшиеся ссылки
-        if current_message != all_links_text:
+        if len(current_message) > len(f"📋 *Все ссылки для чата: {chat_name}*\n\n"):
             await context.bot.send_message(
                 chat_id=user_id,
                 text=current_message,
-                parse_mode='Markdown'
+                parse_mode='Markdown',
+                disable_web_page_preview=True
             )
         
         await query.answer(f"✅ Экспортировано {len(users)} ссылок!")
@@ -707,7 +697,7 @@ class SpamBot:
         db = DatabaseManager(user_id)
         
         if state == "waiting_for_message":
-            await update.message.reply_text("⏳ *Генерирую вариации...*", parse_mode='Markdown')
+            await update.message.reply_text("⏳ *Генерирую вариации (максимум 2 секунды)...*", parse_mode='Markdown')
             
             variations = self.generate_variations(text, 500)
             message_id = db.add_message(text)
