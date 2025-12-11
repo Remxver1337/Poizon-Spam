@@ -13,7 +13,7 @@ for directory in [DATABASES_DIR, LOGS_DIR, CERTS_DIR]:
 
 # ============= ОСНОВНЫЕ НАСТРОЙКИ =============
 # ⚠️ ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ НА СВОИ ⚠️
-MAIN_BOT_TOKEN = "8517379434:AAGqMYBuEQZ8EMNRf3g4yBN-Q0jpm5u5eZU"  # Токен основного бота от @BotFather
+MAIN_BOT_TOKEN = "8568866654:AAFfLobjJfnbjwltSdy4IAw_-3yBzw3rGm8"  # Токен основного бота от @BotFather
 ADMIN_ID = 7404231636  # Ваш Telegram ID (узнать у @userinfobot)
 
 # ============= НАСТРОЙКИ ДОМЕНОВ И ВЕБХУКОВ =============
