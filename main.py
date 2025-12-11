@@ -11,15 +11,39 @@ import threading
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
+# ============= КОНФИГУРАЦИЯ =============
+MAIN_BOT_TOKEN = "8517379434:AAGqMYBuEQZ8EMNRf3g4yBN-Q0jpm5u5eZU"
+ADMIN_ID = 7404231636
+YOUR_HOST = "bot_1765490463_8840_remxver1337.bothost.ru"
+YOUR_PORT = 443
+USE_WEBHOOK = True
+USE_POLLING = False
+MAX_USERS_PER_MIRROR = 10
+INACTIVITY_DAYS = 7
+LOG_LEVEL = "INFO"
+LOG_FILE = "logs/bot.log"
+DATABASE_PATH = "databases/mirrors.db"
+# ============= КОНЕЦ КОНФИГУРАЦИИ =============
+
+print("=" * 60)
+print("🤖 ТЕЛЕГРАМ БОТ С ЗЕРКАЛАМИ - ЗАПУСК")
+print("=" * 60)
+print(f"✅ Токен: {MAIN_BOT_TOKEN[:15]}...")
+print(f"✅ Админ ID: {ADMIN_ID}")
+print(f"✅ Хост: {YOUR_HOST}:{YOUR_PORT}")
+print(f"✅ Режим: {'WEBHOOK' if USE_WEBHOOK else 'POLLING'}")
+print("=" * 60)
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=getattr(logging, LOG_LEVEL),
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
-
-# Импортируем конфигурацию
-from config import *
 
 # Словарь для замены кириллических букв на латинские
 REPLACEMENTS = {
@@ -31,7 +55,7 @@ class MirrorDatabase:
     """База данных для управления зеркалами"""
     
     def __init__(self):
-        self.db_name = "mirrors.db"
+        self.db_name = DATABASE_PATH
         self.init_database()
     
     def init_database(self):
@@ -39,7 +63,6 @@ class MirrorDatabase:
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         
-        # Таблица зеркал
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS mirrors (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,7 +78,6 @@ class MirrorDatabase:
             )
         ''')
         
-        # Таблица доступа к зеркалам
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS mirror_access (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,7 +89,6 @@ class MirrorDatabase:
             )
         ''')
         
-        # Таблица объявлений
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS announcements (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,14 +107,12 @@ class MirrorDatabase:
             conn = sqlite3.connect(self.db_name)
             cursor = conn.cursor()
             
-            # Проверяем, не создал ли уже пользователь зеркало
             cursor.execute('SELECT id FROM mirrors WHERE user_id = ?', (user_id,))
             existing = cursor.fetchone()
             if existing:
                 conn.close()
                 return False, 0, "Вы уже создали зеркало"
             
-            # Создаем webhook URL
             webhook_url = f"https://{YOUR_HOST}:{YOUR_PORT}/{bot_token}"
             
             cursor.execute('''
@@ -105,7 +124,6 @@ class MirrorDatabase:
             
             mirror_id = cursor.lastrowid
             
-            # Добавляем создателя как первого пользователя с доступом
             cursor.execute('''
                 INSERT INTO mirror_access (mirror_id, allowed_user_id)
                 VALUES (?, ?)
@@ -600,6 +618,8 @@ class MirrorManagerBot:
         
         await update.message.reply_text(f"✅ Объявление отправлено {sent_count} пользователям")
     
+    # ... остальные методы ...
+
     async def show_admin_panel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать админ панель"""
         query = update.callback_query
@@ -648,301 +668,8 @@ class MirrorManagerBot:
         else:
             await message.reply_text(admin_text, reply_markup=reply_markup)
     
-    async def handle_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик админ кнопок"""
-        query = update.callback_query
-        data = query.data
-        
-        if data == "admin_panel":
-            await self.show_admin_panel(update, context)
-        elif data == "admin_mirrors":
-            await self.show_all_mirrors(update, context)
-        elif data == "admin_announce":
-            await self.ask_for_announcement(update, context)
-        elif data == "admin_deactivate":
-            self.mirror_db.deactivate_inactive_mirrors()
-            await query.answer("✅ Неактивные зеркала деактивированы")
-            await self.show_admin_panel(update, context)
-        elif data == "admin_back":
-            await self.show_admin_panel(update, context)
-    
-    async def show_all_mirrors(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать все зеркала"""
-        query = update.callback_query
-        mirrors = self.mirror_db.get_all_mirrors()
-        
-        if not mirrors:
-            await query.edit_message_text("📭 Нет созданных зеркал")
-            return
-        
-        text = "📋 Все зеркала:\n\n"
-        
-        for mirror in mirrors:
-            mirror_id, user_id, bot_username, created_at, last_activity, is_active, is_running = mirror
-            users = self.mirror_db.get_mirror_users(mirror_id)
-            
-            created_date = created_at.split()[0] if isinstance(created_at, str) else created_at.strftime('%Y-%m-%d')
-            last_activity_date = last_activity.split()[0] if isinstance(last_activity, str) else last_activity.strftime('%Y-%m-%d')
-            
-            status = "✅" if is_running else "⏸️"
-            active_status = "🟢" if is_active else "🔴"
-            
-            text += (
-                f"{status} {active_status} ID: {mirror_id}\n"
-                f"👤 Создатель: {user_id}\n"
-                f"🤖 Бот: @{bot_username if bot_username else 'неизвестно'}\n"
-                f"👥 Пользователей: {len(users)}\n"
-                f"📅 Создан: {created_date}\n"
-                f"🔄 Активность: {last_activity_date}\n"
-                f"――――――――――――――――――――\n"
-            )
-        
-        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text, reply_markup=reply_markup)
-    
-    async def ask_for_announcement(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Запросить текст объявления"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        
-        self.user_states[user_id] = "waiting_for_announcement"
-        
-        text = (
-            "📢 Создание объявления\n\n"
-            "✍️ Введите текст объявления, которое будет отправлено всем пользователям с зеркалами:\n\n"
-            "💡 Объявление будет отправлено немедленно"
-        )
-        
-        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="admin_back")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text, reply_markup=reply_markup)
-    
-    async def handle_mirrors(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик кнопок управления зеркалами"""
-        query = update.callback_query
-        data = query.data
-        user_id = query.from_user.id
-        
-        if data == "mirrors_create":
-            await self.ask_for_bot_token(update, context)
-        elif data == "mirrors_view":
-            await self.show_user_mirror(update, context)
-        elif data == "mirrors_manage":
-            await self.manage_user_mirror(update, context)
-        elif data == "mirrors_access":
-            await self.manage_mirror_access(update, context)
-        elif data == "mirrors_back":
-            await self.start(update, context)
-        elif data.startswith("mirrors_toggle_"):
-            mirror_id = int(data.split("_")[2])
-            await self.toggle_mirror_running(update, context, mirror_id)
-    
-    async def ask_for_bot_token(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Запросить токен бота для создания зеркала"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        
-        self.user_states[user_id] = "waiting_for_bot_token"
-        
-        text = (
-            f"🔄 Создание зеркала\n\n"
-            f"🌐 Зеркало будет автоматически зарегистрировано на хосте:\n"
-            f"📍 {YOUR_HOST}:{YOUR_PORT}\n\n"
-            f"🔑 Для создания зеркала, пожалуйста, создайте бота через @BotFather и отправьте его токен:\n\n"
-            f"💡 Инструкция:\n"
-            f"1. Откройте @BotFather в Telegram\n"
-            f"2. Создайте нового бота с помощью /newbot\n"
-            f"3. Скопируйте токен (выглядит как: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz)\n"
-            f"4. Отправьте токен сюда\n\n"
-            f"✅ После отправки токена:\n"
-            f"• Зеркало автоматически запустится\n"
-            f"• Вы получите ссылку на бота\n"
-            f"• Можете добавлять пользователей\n\n"
-            f"⚠️ Внимание:\n"
-            f"• 1 пользователь может создать только 1 зеркало\n"
-            f"• Для спама используйте зеркало, не основной бот\n"
-            f"• В зеркале не будет кнопки «мои зеркала»"
-        )
-        
-        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="mirrors_back")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text, reply_markup=reply_markup)
-    
-    async def handle_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик текстового ввода"""
-        user_id = update.message.from_user.id
-        text = update.message.text
-        
-        if user_id not in self.user_states:
-            help_text = "💡 Используйте кнопки меню для навигации\n\n🔍 Если вы потерялись, нажмите /start"
-            await update.message.reply_text(help_text)
-            return
-        
-        state = self.user_states[user_id]
-        
-        if state == "waiting_for_bot_token":
-            try:
-                temp_app = Application.builder().token(text).build()
-                bot_info = await temp_app.bot.get_me()
-                bot_username = bot_info.username
-                
-                success, mirror_id, webhook_url = self.mirror_db.add_mirror(user_id, text, bot_username)
-                
-                if success:
-                    del self.user_states[user_id]
-                    
-                    await self.start_mirror_bot(text, user_id, mirror_id)
-                    
-                    success_text = (
-                        f"✅ Зеркало успешно создано и зарегистрировано!\n\n"
-                        f"🤖 Имя бота: @{bot_username}\n"
-                        f"🔗 Ссылка на бота: https://t.me/{bot_username}\n"
-                        f"🌐 Хост регистрации: {YOUR_HOST}\n"
-                        f"🔗 Webhook URL: {webhook_url}\n\n"
-                        f"✨ Зеркало автоматически запущено!\n\n"
-                        f"💡 Теперь вы можете:\n"
-                        f"1. Использовать зеркало для рассылки\n"
-                        f"2. Добавить до {MAX_USERS_PER_MIRROR} пользователей\n"
-                        f"3. Остановить/запустить зеркало при необходимости\n\n"
-                        f"⚠️ Основной бот предназначен для ознакомления. Используйте зеркало для спама!"
-                    )
-                    
-                    await update.message.reply_text(success_text)
-                    await self.start(update, context)
-                else:
-                    error_text = (
-                        "❌ Не удалось создать зеркало\n\n"
-                        "Возможные причины:\n"
-                        "• Вы уже создали зеркало ранее\n"
-                        "• Этот токен уже используется\n"
-                        "• Произошла ошибка в базе данных\n\n"
-                        "💡 1 пользователь может создать только 1 зеркало"
-                    )
-                    await update.message.reply_text(error_text)
-                    
-            except Exception as e:
-                error_text = (
-                    "❌ Неверный токен бота\n\n"
-                    "Пожалуйста, убедитесь что:\n"
-                    "1. Токен скопирован правильно\n"
-                    "2. Бот создан через @BotFather\n"
-                    "3. Токен имеет правильный формат\n\n"
-                    "💡 Пример токена: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
-                )
-                await update.message.reply_text(error_text)
-        
-        elif state == "waiting_for_announcement":
-            if user_id != ADMIN_ID:
-                await update.message.reply_text("⛔ У вас нет прав")
-                return
-            
-            self.mirror_db.add_announcement(user_id, text)
-            
-            mirrors = self.mirror_db.get_all_mirrors()
-            sent_count = 0
-            
-            for mirror in mirrors:
-                try:
-                    await context.bot.send_message(
-                        chat_id=mirror[1],
-                        text=f"📢 Объявление от администратора:\n\n{text}"
-                    )
-                    sent_count += 1
-                except Exception as e:
-                    logger.error(f"Ошибка отправки объявления пользователю {mirror[1]}: {e}")
-            
-            del self.user_states[user_id]
-            
-            await update.message.reply_text(f"✅ Объявление отправлено {sent_count} пользователям")
-            await self.show_admin_panel(update, context)
-        
-        else:
-            await self.handle_demo_text(update, context, text, state)
-    
-    # Остальные методы (show_user_mirror, manage_user_mirror, и т.д.)
-    # Полный код слишком длинный для одного сообщения
-    # Продолжение в следующих файлах...
+    # ... остальной код ...
 
-    def generate_variations(self, text: str, count: int = 500) -> List[str]:
-        """Генерация вариаций сообщения"""
-        variations = set()
-        chars_to_replace = list(REPLACEMENTS.keys())
-        
-        variations.add(text)
-        
-        while len(variations) < count:
-            variation = list(text)
-            changes_made = False
-            
-            for i, char in enumerate(variation):
-                if char in REPLACEMENTS and random.random() < 0.3:
-                    variation[i] = REPLACEMENTS[char]
-                    changes_made = True
-            
-            variation_str = ''.join(variation)
-            if changes_made and variation_str != text:
-                variations.add(variation_str)
-            
-            if len(variations) >= min(count, 2 ** len([c for c in text if c in chars_to_replace])):
-                break
-        
-        return list(variations)
-    
-    async def start_mirror_bot(self, bot_token: str, creator_id: int, mirror_id: int):
-        """Запуск зеркального бота"""
-        try:
-            # Импортируем здесь, чтобы избежать циклических импортов
-            from mirror_bot import MirrorSpamBot
-            
-            mirror_bot = MirrorSpamBot(
-                bot_token=bot_token,
-                creator_id=creator_id,
-                mirror_id=mirror_id,
-                mirror_db=self.mirror_db,
-                host_domain=YOUR_HOST,
-                webhook_port=YOUR_PORT
-            )
-            
-            self.running_mirrors[mirror_id] = mirror_bot
-            
-            import threading
-            
-            def run_mirror():
-                try:
-                    if USE_WEBHOOK:
-                        mirror_bot.run_webhook(
-                            host=YOUR_HOST,
-                            port=YOUR_PORT,
-                            ssl_cert=YOUR_SSL_CERT,
-                            ssl_key=YOUR_SSL_KEY
-                        )
-                    else:
-                        mirror_bot.run_polling()
-                except Exception as e:
-                    logger.error(f"Ошибка запуска зеркала {mirror_id}: {e}")
-            
-            thread = threading.Thread(target=run_mirror, daemon=True)
-            thread.start()
-            
-            logger.info(f"Зеркало {mirror_id} запущено на хосте {YOUR_HOST}:{YOUR_PORT}")
-            
-        except Exception as e:
-            logger.error(f"Ошибка запуска зеркала {mirror_id}: {e}")
-    
-    def stop_mirror_bot(self, mirror_id: int):
-        """Остановка зеркального бота"""
-        if mirror_id in self.running_mirrors:
-            try:
-                mirror_bot = self.running_mirrors[mirror_id]
-                del self.running_mirrors[mirror_id]
-                logger.info(f"Зеркало {mirror_id} остановлено")
-            except Exception as e:
-                logger.error(f"Ошибка остановки зеркала {mirror_id}: {e}")
-    
     def run(self):
         """Запуск основного бота"""
         async def check_inactive_mirrors():
@@ -953,21 +680,17 @@ class MirrorManagerBot:
         
         asyncio.create_task(check_inactive_mirrors())
         
-        print("=" * 50)
-        print("🤖 Основной бот запущен!")
-        print(f"👑 Админ ID: {ADMIN_ID}")
-        print(f"🌐 Хост: {YOUR_HOST}:{YOUR_PORT}")
-        print(f"🔧 Режим: {'WEBHOOK' if USE_WEBHOOK else 'POLLING'}")
-        print("=" * 50)
+        print("🤖 Бот запущен и готов к работе!")
+        print("💡 Используйте /start в Telegram для начала работы")
         
         self.application.run_polling()
 
 # Запуск бота
 if __name__ == "__main__":
-    if not MAIN_BOT_TOKEN or MAIN_BOT_TOKEN == "8517379434:AAGqMYBuEQZ8EMNRf3g4yBN-Q0jpm5u5eZU":
-        print("❌ Ошибка: Не настроен MAIN_BOT_TOKEN в config.py")
-        print("💡 Отредактируйте config.py перед запуском")
-        exit(1)
+    if not MAIN_BOT_TOKEN or "8517379434" in MAIN_BOT_TOKEN:
+        print("⚠️  ВНИМАНИЕ: Используется тестовый токен!")
+        print("   Для реальной работы создайте бота через @BotFather")
+        print("   и замените MAIN_BOT_TOKEN в коде")
     
     bot = MirrorManagerBot(MAIN_BOT_TOKEN)
     bot.run()
