@@ -8,6 +8,7 @@ import sqlite3
 import asyncio
 from datetime import datetime
 import ssl
+import os
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -30,10 +31,9 @@ class MirrorManagerBot:
     """Основной бот для создания и управления зеркалами с вебхуками"""
     
     def __init__(self):
-        self.app = Application.builder().token(config.MAIN_BOT_TOKEN).build()
+        self.app = None
         self.mirror_bots = {}  # Запущенные зеркала
         self.setup_database()
-        self.setup_handlers()
         
         # Создаем SSL контекст если есть сертификаты
         self.ssl_context = None
@@ -77,6 +77,18 @@ class MirrorManagerBot:
         conn.commit()
         conn.close()
         logger.info("База данных инициализирована")
+    
+    async def initialize(self):
+        """Инициализация бота (вызывается асинхронно)"""
+        self.app = Application.builder().token(config.MAIN_BOT_TOKEN).build()
+        self.setup_handlers()
+        
+        # Получаем информацию о боте
+        bot_info = await self.app.bot.get_me()
+        self.bot_username = bot_info.username
+        self.bot_id = bot_info.id
+        
+        logger.info(f"Бот инициализирован: @{self.bot_username}")
     
     def setup_handlers(self):
         """Настройка обработчиков команд"""
@@ -286,6 +298,7 @@ class MirrorManagerBot:
                 del self.mirror_bots[mirror_id]
             
             mirror_bot = MirrorBot(bot_token, user_id, mirror_id, is_webhook=True)
+            import threading
             thread = threading.Thread(target=mirror_bot.run, daemon=True)
             thread.start()
             
@@ -315,6 +328,7 @@ class MirrorManagerBot:
                 del self.mirror_bots[mirror_id]
             
             mirror_bot = MirrorBot(bot_token, user_id, mirror_id, is_webhook=False)
+            import threading
             thread = threading.Thread(target=mirror_bot.run, daemon=True)
             thread.start()
             
@@ -535,13 +549,16 @@ class MirrorManagerBot:
         elif data == "admin":
             await self.admin_command(update, context)
     
-    def run(self):
-        """Запуск бота в нужном режиме"""
+    async def run_async(self):
+        """Асинхронный запуск бота"""
+        await self.initialize()
+        
         logger.info(f"Запуск основного бота в режиме {config.MODE}...")
         
         print(f"\n{'='*60}")
         print(f"🤖 Основной бот запущен!")
-        print(f"🔗 Бот: https://t.me/{(self.app.bot.username)}")
+        print(f"🔗 Бот: https://t.me/{self.bot_username}")
+        print(f"🆔 ID бота: {self.bot_id}")
         print(f"👤 Админ ID: {config.ADMIN_ID}")
         print(f"🌐 Домен: {config.WEBHOOK_HOST}")
         print(f"🚪 Порт: {config.WEBHOOK_PORT}")
@@ -551,7 +568,7 @@ class MirrorManagerBot:
         if config.MODE == "webhook":
             # Запуск с вебхуком
             try:
-                self.app.run_webhook(
+                await self.app.run_webhook(
                     listen=config.WEBHOOK_LISTEN,
                     port=config.WEBHOOK_PORT,
                     url_path=config.MAIN_BOT_TOKEN,
@@ -564,17 +581,24 @@ class MirrorManagerBot:
                 logger.error(f"Ошибка запуска вебхука: {e}")
                 print(f"❌ Ошибка вебхука: {e}")
                 print("🔄 Переключаемся на polling режим...")
-                self.app.run_polling()
+                await self.app.run_polling()
         else:
             # Запуск в режиме polling
-            self.app.run_polling()
+            await self.app.run_polling()
 
 def main():
     """Главная функция"""
     print("🚀 Запуск системы зеркал с вебхуками...")
     
     # Проверяем конфигурацию
-    errors = config.validate_config()
+    errors = []
+    
+    if not config.MAIN_BOT_TOKEN or "8517379434" in config.MAIN_BOT_TOKEN:
+        errors.append("⚠️  Используется тестовый токен! Замените MAIN_BOT_TOKEN в config.py")
+    
+    if config.MODE == "webhook" and not config.WEBHOOK_HOST:
+        errors.append("⚠️  Режим webhook выбран, но WEBHOOK_HOST не указан")
+    
     if errors:
         print("\n❌ Ошибки конфигурации:")
         for error in errors:
@@ -584,8 +608,9 @@ def main():
     
     # Создаем и запускаем бота
     bot = MirrorManagerBot()
-    bot.run()
+    
+    # Запускаем асинхронно
+    asyncio.run(bot.run_async())
 
 if __name__ == "__main__":
-    import os
     main()
