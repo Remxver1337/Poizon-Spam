@@ -1,39 +1,72 @@
+#!/usr/bin/env python3
+"""
+Конфигурация бота
+"""
+
 import os
 from pathlib import Path
 
-# Пути
+# ============= ПУТИ =============
 BASE_DIR = Path(__file__).parent
 DATABASES_DIR = BASE_DIR / "databases"
 LOGS_DIR = BASE_DIR / "logs"
+CERTS_DIR = BASE_DIR / "certs"
 
-for directory in [DATABASES_DIR, LOGS_DIR]:
+# Создаем папки
+for directory in [DATABASES_DIR, LOGS_DIR, CERTS_DIR]:
     directory.mkdir(exist_ok=True)
 
 # ============= ОСНОВНЫЕ НАСТРОЙКИ =============
-MAIN_BOT_TOKEN = "8568866654:AAFfLobjJfnbjwltSdy4IAw_-3yBzw3rGm8"  # Ваш токен
-ADMIN_ID = 7404231636  # Ваш ID
+MAIN_BOT_TOKEN = "8517379434:AAGqMYBuEQZ8EMNRf3g4yBN-Q0jpm5u5eZU"
+ADMIN_ID = 7404231636
 
-# ============= НАСТРОЙКИ ДОМЕНА =============
-MODE = "polling"  # Сначала используйте polling для отладки
-WEBHOOK_HOST = "bot_1765495089_6423_remxver1337.bothost.ru"
-WEBHOOK_PORT = 3000
-WEBHOOK_LISTEN = "0.0.0.0"
+# ============= НАСТРОЙКИ ДОМЕНА И ВЕБХУКОВ =============
+YOUR_HOST = "bot_1765490463_8840_remxver1337.bothost.ru"
+YOUR_PORT = 3000
+USE_WEBHOOK = True
+USE_POLLING = False
 
-# SSL (опционально, для начала не нужно)
-SSL_CERT = None
-SSL_KEY = None
+# URL вебхука для основного бота
+MAIN_WEBHOOK_URL = f"https://{YOUR_HOST}:{YOUR_PORT}/{MAIN_BOT_TOKEN}"
 
-# URL вебхуков
-MAIN_WEBHOOK_URL = f"https://{WEBHOOK_HOST}:{WEBHOOK_PORT}/{MAIN_BOT_TOKEN}"
-MIRROR_WEBHOOK_BASE = f"https://{WEBHOOK_HOST}:{WEBHOOK_PORT}"
+# URL вебхука для зеркальных ботов
+MIRROR_WEBHOOK_BASE = f"https://{YOUR_HOST}:{YOUR_PORT}"
 
-# ============= ДРУГИЕ НАСТРОЙКИ =============
-MIRRORS_DB_PATH = str(DATABASES_DIR / "mirrors.db")
+# SSL сертификаты (если есть)
+SSL_CERT = os.path.join(CERTS_DIR, "cert.pem") if os.path.exists(CERTS_DIR) else None
+SSL_KEY = os.path.join(CERTS_DIR, "key.pem") if os.path.exists(CERTS_DIR) else None
+
+# ============= НАСТРОЙКИ БАЗЫ ДАННЫХ =============
+DATABASE_PATH = str(DATABASES_DIR / "mirrors.db")
+MAX_USERS_PER_MIRROR = 10
+INACTIVITY_DAYS = 7
+
+# ============= НАСТРОЙКИ ЛОГИРОВАНИЯ =============
 LOG_LEVEL = "INFO"
 LOG_FILE = str(LOGS_DIR / "bot.log")
 
-# Словарь для замены символов
+# ============= НАСТРОЙКИ РАССЫЛКИ =============
 REPLACEMENTS = {
     'а': 'a', 'с': 'c', 'о': 'o', 'р': 'p', 'е': 'e', 'х': 'x', 'у': 'y',
     'А': 'A', 'С': 'C', 'О': 'O', 'Р': 'P', 'Е': 'E', 'Х': 'X', 'У': 'Y'
 }
+MAX_VARIATIONS_PER_MESSAGE = 500
+
+# ============= ПРОВЕРКА КОНФИГУРАЦИИ =============
+def check_config():
+    """Проверка конфигурации"""
+    print("=" * 60)
+    print("🤖 ПРОВЕРКА КОНФИГУРАЦИИ")
+    print("=" * 60)
+    print(f"✅ Токен: {MAIN_BOT_TOKEN[:15]}...")
+    print(f"✅ Админ ID: {ADMIN_ID}")
+    print(f"✅ Хост: {YOUR_HOST}:{YOUR_PORT}")
+    print(f"✅ Режим: {'WEBHOOK' if USE_WEBHOOK else 'POLLING'}")
+    print(f"✅ Вебхук URL: {MAIN_WEBHOOK_URL}")
+    print("=" * 60)
+    
+    if USE_WEBHOOK and not YOUR_HOST:
+        print("❌ ВНИМАНИЕ: Режим WEBHOOK выбран, но YOUR_HOST не указан!")
+        return False
+    
+    return True
