@@ -725,7 +725,7 @@ class SpamBot:
 
 # Запуск бота
 if __name__ == "__main__":
-    BOT_TOKEN = "8337608591:AAG6SeAOY5PIVkcy_xljTR-J2KyKEtzLgSI"
+    BOT_TOKEN = "8434408237:AAEzHRNiF8FUTCTN25UvxuIE70CgCQs0Opg"
     
     bot = SpamBot(BOT_TOKEN)
     print("🤖 Бот запущен и готов к работе!")
