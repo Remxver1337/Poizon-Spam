@@ -1,13 +1,14 @@
 import random
 import sqlite3
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 TOKEN = "8255139931:AAFA2Bti_ERq1x1Z_QRyKsPK6IpXZ9bFi7U"
 
-# Кастомные эмодзи — используем синтаксис с фигурными скобками
-MEDAL_EMOJI = "{{5447203607294265305}}"
-STAR_EMOJI = "{{5244668080784691652}}"
+# Кастомные эмодзи через ссылку (Telegram превратит их в эмодзи у премиум-пользователей)
+MEDAL_EMOJI = "https://t.me/emoji/5447203607294265305"
+STAR_EMOJI = "https://t.me/emoji/5244668080784691652"
 
 # ========== 117 ШАБЛОНОВ ==========
 TEMPLATES = [
@@ -225,13 +226,12 @@ def save_used(template_text):
     conn.close()
 
 def obfuscate_text(text: str) -> str:
-    """50% вероятность замены для каждого символа, обходит {{кастомные эмодзи}}"""
-    import re
-    # Защищаем кастомные эмодзи от замены
-    parts = re.split(r'(\{\{[0-9]+\}\})', text)
+    """50% вероятность замены, обходит ссылки на кастомные эмодзи"""
+    # Защищаем https://t.me/emoji/... от замены
+    parts = re.split(r'(https://t\.me/emoji/[0-9]+)', text)
     result = []
     for part in parts:
-        if part.startswith('{{') and part.endswith('}}'):
+        if part.startswith('https://t.me/emoji/'):
             result.append(part)
         else:
             chars = list(part)
@@ -256,7 +256,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📬 Нажми кнопку для генерации уникальных шаблонов.\n\n"
         "✅ 50% замена символов (а→a, е→e, о→o и т.д.)\n"
         "✅ 117 синонимичных шаблонов\n"
-        "✅ Кастомные эмодзи из NewsEmoji\n"
+        "✅ Кастомные эмодзи из NewsEmoji (для премиум-пользователей)\n"
         "✅ Очистка БД каждые 50 000 сообщений\n"
         "✅ Одинаковые сообщения никогда не повторятся",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -277,7 +277,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback, pattern="generate"))
-    print("✅ Бот запущен. Кастомные эмодзи в формате {{id}}")
+    print("✅ Бот запущен. Кастомные эмодзи через https://t.me/emoji/...")
     app.run_polling()
 
 if __name__ == "__main__":
