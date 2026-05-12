@@ -5,13 +5,13 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 TOKEN = "8255139931:AAFA2Bti_ERq1x1Z_QRyKsPK6IpXZ9bFi7U"
 
-# Кастомные эмодзи (работают только в Telegram у премиум-пользователей)
-MEDAL_EMOJI = "tg://emoji?id=5447203607294265305"
-STAR_EMOJI = "tg://emoji?id=5244668080784691652"
+# Кастомные эмодзи — используем синтаксис с фигурными скобками
+MEDAL_EMOJI = "{{5447203607294265305}}"
+STAR_EMOJI = "{{5244668080784691652}}"
 
-# ========== 117 ШАБЛОНОВ (в шаблоне №1 заменены эмодзи) ==========
+# ========== 117 ШАБЛОНОВ ==========
 TEMPLATES = [
-    # Шаблон 1 (18 вариантов, эмодзи заменены на кастомные)
+    # Шаблон 1 (18 вариантов)
     f"Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
     f"Добрый вечер! Вы выиграли у нас @PoizonCountry в конкурсе 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
     f"Добрый вечер! Вы победили у нас @PoizonCountry в розыгрыше 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
@@ -186,7 +186,6 @@ def increment_message_count():
     conn.close()
 
 def clean_old_records():
-    """Очищает старые записи, оставляя последние 1000"""
     conn = sqlite3.connect('templates.db')
     cursor = conn.cursor()
     cursor.execute('''
@@ -200,7 +199,6 @@ def clean_old_records():
         print(f"🧹 Очищено {deleted} старых записей из БД")
 
 def check_and_cleanup():
-    """Проверяет счётчик и очищает БД каждые 50 000 сообщений"""
     msg_count = get_message_count()
     if msg_count >= MESSAGES_BEFORE_CLEANUP:
         clean_old_records()
@@ -227,15 +225,23 @@ def save_used(template_text):
     conn.close()
 
 def obfuscate_text(text: str) -> str:
-    """50% вероятность замены для каждого символа из словаря"""
-    chars = list(text)
-    for i, ch in enumerate(chars):
-        if ch in REPLACEMENTS and random.random() < 0.5:
-            chars[i] = REPLACEMENTS[ch]
-    return ''.join(chars)
+    """50% вероятность замены для каждого символа, обходит {{кастомные эмодзи}}"""
+    import re
+    # Защищаем кастомные эмодзи от замены
+    parts = re.split(r'(\{\{[0-9]+\}\})', text)
+    result = []
+    for part in parts:
+        if part.startswith('{{') and part.endswith('}}'):
+            result.append(part)
+        else:
+            chars = list(part)
+            for i, ch in enumerate(chars):
+                if ch in REPLACEMENTS and random.random() < 0.5:
+                    chars[i] = REPLACEMENTS[ch]
+            result.append(''.join(chars))
+    return ''.join(result)
 
 def generate_unique_variant(original_template):
-    """Генерирует уникальный вариант, которого ещё не было в БД"""
     max_attempts = 100
     for _ in range(max_attempts):
         variant = obfuscate_text(original_template)
@@ -271,7 +277,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback, pattern="generate"))
-    print("✅ Бот запущен. Очистка БД каждые 50 000 сообщений. Кастомные эмодзи из NewsEmoji активны.")
+    print("✅ Бот запущен. Кастомные эмодзи в формате {{id}}")
     app.run_polling()
 
 if __name__ == "__main__":
