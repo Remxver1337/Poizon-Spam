@@ -1,17 +1,24 @@
 import random
 import sqlite3
+import re
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 TOKEN = "8255139931:AAFA2Bti_ERq1x1Z_QRyKsPK6IpXZ9bFi7U"
 
-# ========== ФОТО С ВАШИМИ FILE_ID ==========
-PHOTO_PROMOCODE = "AgACAgIAAxkBAAFJmjVqBdB1zGDr8FOvOSthiJGwBquzcAAC0xtrG77OMUgWQmYbLC23LwEAAwIAA3kAAzsE"
-PHOTO_ORDER_1 = "AgACAgIAAxkBAAFJmjdqBdCh72hXPOCi18n7WR3_q3bbTQACAhdrGyztMUi1K8WOyeLHXwEAAwIAA3kAAzsE"
-PHOTO_ORDER_2 = "AgACAgIAAxkBAAFJmjlqBdDKiLdCZXC5BBd5ipBz_wRcugACAxdrGyztMUjcBRMvQUT06QEAAwIAA3gAAzsE"
+# Кастомные эмодзи (работают через MessageEntity)
+PREMIUM_EMOJIS = {
+    '🤩': '5244668080784691652',
+    '🥈': '5447203607294265305',
+}
 
-# ========== 117 ШАБЛОНОВ ==========
+# ID фото (ваши)
+PHOTO_PROMOCODE = AgACAgIAAxkBAAFJmjVqBdB1zGDr8FOvOSthiJGwBquzcAAC0xtrG77OMUgWQmYbLC23LwEAAwIAA3kAAzsE
+PHOTO_ORDER_1 = AgACAgIAAxkBAAFJmjdqBdCh72hXPOCi18n7WR3_q3bbTQACAhdrGyztMUi1K8WOyeLHXwEAAwIAA3kAAzsE
+PHOTO_ORDER_2 = AgACAgIAAxkBAAFJmjlqBdDKiLdCZXC5BBd5ipBz_wRcugACAxdrGyztMUjcBRMvQUT06QEAAwIAA3gAAzsE
+
+# ========== ВСЕ ВАШИ ШАБЛОНЫ (117 шт) ==========
 TEMPLATES = [
     # Шаблон 1 (18 вариантов)
     "Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
@@ -249,8 +256,33 @@ def get_random_template(template_group):
     idx = random.randint(0, len(template_group) - 1)
     return generate_unique_variant(template_group[idx])
 
+def build_premium_entities(text: str):
+    """Создает entities для кастомных эмодзи"""
+    entities = []
+    offset = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        # Проверяем, не является ли символ частью последовательности
+        if ch in PREMIUM_EMOJIS:
+            utf16_len = len(ch.encode('utf-16-le')) // 2
+            entities.append(MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI,
+                offset=offset,
+                length=utf16_len,
+                custom_emoji_id=PREMIUM_EMOJIS[ch],
+            ))
+            offset += utf16_len
+            i += 1
+        else:
+            # Обычный символ
+            utf16_len = len(ch.encode('utf-16-le')) // 2
+            offset += utf16_len
+            i += 1
+    return entities
+
 async def send_pack(chat_id, context, pack_number):
-    """Отправляет один пак из 6 шаблонов с фото"""
+    """Отправляет один пак из 6 шаблонов"""
     templates_group1 = TEMPLATES[0:18]
     templates_group2 = TEMPLATES[18:38]
     templates_group3 = TEMPLATES[38:58]
@@ -265,45 +297,46 @@ async def send_pack(chat_id, context, pack_number):
     msg5 = get_random_template(templates_group5)
     msg6 = get_random_template(templates_group6)
     
-    # Шаблон 5 (заказ) с двумя фото (каждое со своей подписью)
-    if PHOTO_ORDER_1 and PHOTO_ORDER_2:
-        try:
-            await context.bot.send_photo(chat_id=chat_id, photo=PHOTO_ORDER_1, caption=msg5)
-            await context.bot.send_photo(chat_id=chat_id, photo=PHOTO_ORDER_2)
-        except Exception as e:
-            print(f"Ошибка фото ордер: {e}")
-            await context.bot.send_message(chat_id=chat_id, text=msg5)
-    else:
-        await context.bot.send_message(chat_id=chat_id, text=msg5)
+    # Шаблон 5 с фото
+    entities5 = build_premium_entities(msg5)
+    try:
+        await context.bot.send_photo(chat_id=chat_id, photo=PHOTO_ORDER_1, caption=msg5, caption_entities=entities5)
+        await context.bot.send_photo(chat_id=chat_id, photo=PHOTO_ORDER_2)
+    except Exception as e:
+        print(f"Ошибка фото ордер: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=msg5, entities=entities5)
     increment_message_count()
     check_and_cleanup()
     
-    # Шаблон 6 (промокод) с фото и подписью
-    if PHOTO_PROMOCODE:
-        try:
-            await context.bot.send_photo(chat_id=chat_id, photo=PHOTO_PROMOCODE, caption=msg6)
-        except Exception as e:
-            print(f"Ошибка фото промокод: {e}")
-            await context.bot.send_message(chat_id=chat_id, text=msg6)
-    else:
-        await context.bot.send_message(chat_id=chat_id, text=msg6)
+    # Шаблон 6 с фото
+    entities6 = build_premium_entities(msg6)
+    try:
+        await context.bot.send_photo(chat_id=chat_id, photo=PHOTO_PROMOCODE, caption=msg6, caption_entities=entities6)
+    except Exception as e:
+        print(f"Ошибка фото промокод: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=msg6, entities=entities6)
     increment_message_count()
     check_and_cleanup()
     
-    # Остальные сообщения без фото
-    await context.bot.send_message(chat_id=chat_id, text=msg1)
+    # Остальные сообщения
+    entities1 = build_premium_entities(msg1)
+    entities2 = build_premium_entities(msg2)
+    entities3 = build_premium_entities(msg3)
+    entities4 = build_premium_entities(msg4)
+    
+    await context.bot.send_message(chat_id=chat_id, text=msg1, entities=entities1)
     increment_message_count()
     check_and_cleanup()
     
-    await context.bot.send_message(chat_id=chat_id, text=msg2)
+    await context.bot.send_message(chat_id=chat_id, text=msg2, entities=entities2)
     increment_message_count()
     check_and_cleanup()
     
-    await context.bot.send_message(chat_id=chat_id, text=msg3)
+    await context.bot.send_message(chat_id=chat_id, text=msg3, entities=entities3)
     increment_message_count()
     check_and_cleanup()
     
-    await context.bot.send_message(chat_id=chat_id, text=msg4)
+    await context.bot.send_message(chat_id=chat_id, text=msg4, entities=entities4)
     increment_message_count()
     check_and_cleanup()
     
@@ -313,10 +346,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("Сгенерировать шаблоны 🗂️", callback_data="generate")]]
     await update.message.reply_text(
         "📬 Нажми кнопку для генерации уникальных шаблонов.\n\n"
-        "✅ 50% замена символов (а→a, е→e, о→o и т.д.)\n"
+        "✅ 50% замена символов\n"
         "✅ 117 синонимичных шаблонов\n"
-        "✅ Очистка БД каждые 50 000 сообщений\n"
-        "✅ Одинаковые сообщения никогда не повторятся",
+        "✅ Кастомные эмодзи для Premium\n"
+        "✅ Очистка БД каждые 50 000 сообщений",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -355,7 +388,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ Введите число (например: 5)")
 
-# ========== ЗАПУСК ==========
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
@@ -363,9 +395,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_callback, pattern="generate"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("✅ Бот запущен!")
-    print(f"📷 Фото промокода: {'загружено' if PHOTO_PROMOCODE else 'отсутствует'}")
-    print(f"📷 Фото ордер1: {'загружено' if PHOTO_ORDER_1 else 'отсутствует'}")
-    print(f"📷 Фото ордер2: {'загружено' if PHOTO_ORDER_2 else 'отсутствует'}")
+    print("📌 Кастомные эмодзи работают через MessageEntity")
     app.run_polling()
 
 if __name__ == "__main__":
