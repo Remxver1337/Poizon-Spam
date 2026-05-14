@@ -1,36 +1,32 @@
 import random
 import sqlite3
-import re
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 TOKEN = "8255139931:AAFA2Bti_ERq1x1Z_QRyKsPK6IpXZ9bFi7U"
 
-# Кастомные эмодзи через ссылку (Telegram превратит их в эмодзи у премиум-пользователей)
-MEDAL_EMOJI = "https://t.me/emoji/5447203607294265305"
-STAR_EMOJI = "https://t.me/emoji/5244668080784691652"
-
-# ========== 117 ШАБЛОНОВ ==========
+# ========== 117 ШАБЛОНОВ (финальная версия без удалённых) ==========
 TEMPLATES = [
-    # Шаблон 1 (18 вариантов)
-    f"Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
-    f"Добрый вечер! Вы выиграли у нас @PoizonCountry в конкурсе 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
-    f"Добрый вечер! Вы победили у нас @PoizonCountry в розыгрыше 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
-    f"Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя отправка бeз комиссии +25% скидка нa заказ",
-    f"Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa покупку",
-    f"Добрый вечер! Вы стали победителем у нас @PoizonCountry в конкурсе 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
-    f"Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nДоставкa бесплатно, комиссии нет, +25% скидка нa заказ",
-    f"Добрый вечер! Поздравляем, вы победили у нас @PoizonCountry в конкурсе 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
-    f"Добрый вечер! Вы победили в конкурсе 07.02 у нас @PoizonCountry\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
-    f"Добрый вечер! Ваша победа в конкурсе @PoizonCountry 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
-    f"Добрый вечер! Вы победили у нас в конкурсе @PoizonCountry 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
-    f"Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nСкидка 25% и бесплатная доставка без комиссии",
-    f"Добрый вечер! У нас @PoizonCountry вы победили в конкурсе 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
-    f"Добрый вечер! Победа за вами в конкурсе @PoizonCountry 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатная доставка +25% без комиссии",
-    f"Добрый вечер! Вы выиграли в конкурсе @PoizonCountry 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nДоставка 0₽, комиссия 0%, +25% на заказ",
-    f"Добрый вечер! Вы лучший в розыгрыше @PoizonCountry 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nДоставка бесплатно, комиссию не берём, скидка 25%",
-    f"Добрый вечер! Ваш выигрыш в конкурсе @PoizonCountry 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
-    f"Добрый вечер! Поздравляем с победой в конкурсе @PoizonCountry 07.02\n\n{MEDAL_EMOJI} - Egor Sobolev {STAR_EMOJI}\n\nДоставка за наш счёт, без комиссии, -25% на заказ",
+    # Шаблон 1 (18 вариантов, удалены 16 и 17)
+    "Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
+    "Добрый вечер! Вы выиграли у нас @PoizonCountry в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
+    "Добрый вечер! Вы победили у нас @PoizonCountry в розыгрыше 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
+    "Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя отправка бeз комиссии +25% скидка нa заказ",
+    "Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa покупку",
+    "Добрый вечер! Вы стали победителем у нас @PoizonCountry в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
+    "Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nДоставкa бесплатно, комиссии нет, +25% скидка нa заказ",
+    "Добрый вечер! Поздравляем, вы победили у нас @PoizonCountry в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
+    "Добрый вечер! Вы победили в конкурсе 07.02 у нас @PoizonCountry\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
+    "Добрый вечер! Ваша победа в конкурсе @PoizonCountry 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
+    "Добрый вечер! Вы победили у нас в конкурсе @PoizonCountry 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
+    "Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nСкидка 25% и бесплатная доставка без комиссии",
+    "Добрый вечер! У нас @PoizonCountry вы победили в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
+    "Добрый вечер! Победа за вами в конкурсе @PoizonCountry 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатная доставка +25% без комиссии",
+    "Добрый вечер! Вы выиграли в конкурсе @PoizonCountry 07.02\n\n🥈- Egor Sobolev 🤩\n\nДоставка 0₽, комиссия 0%, +25% на заказ",
+    "Добрый вечер! Вы лучший в розыгрыше @PoizonCountry 07.02\n\n🥈- Egor Sobolev 🤩\n\nДоставка бесплатно, комиссию не берём, скидка 25%",
+    "Добрый вечер! Ваш выигрыш в конкурсе @PoizonCountry 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
+    "Добрый вечер! Поздравляем с победой в конкурсе @PoizonCountry 07.02\n\n🥈- Egor Sobolev 🤩\n\nДоставка за наш счёт, без комиссии, -25% на заказ",
 
     # Шаблон 2 (20 вариантов)
     "Принято, пришлите мне тег аккаунтa тогo, кто будет оформлять по промокоду, пусть напишет мне сейчас",
@@ -76,7 +72,7 @@ TEMPLATES = [
     "Ок, пришлите, пожaлуйста, имя пользователя друга @.., пусть отпишет мне сейчас",
     "Ок, пришлите, пожaлуйста, какой тег у @.. Вашего друга, пусть отпишет мне сейчас",
 
-    # Шаблон 4 (19 вариантов)
+    # Шаблон 4 (19 вариантов, удалён 12)
     "Главное отправьте мне, пожалуйста, тег @.. того, кто оформит заказ по промокоду",
     "Главное пришлите мне, пожалуйста, тег @.. того, кто оформит заказ по промокоду",
     "Главное отправьте мне, пожалуйста, юзернейм @.. того, кто оформит заказ по промокоду",
@@ -142,14 +138,59 @@ TEMPLATES = [
     "Нужна стоимость товаров по конкурсу? Ждём вас в @PoizonCountryRobot \n\nПромокод: CNT61184",
 ]
 
-# Замены символов (обфускация)
+# Замены символов
 REPLACEMENTS = {
     'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'х': 'x', 'у': 'y',
     'К': 'K', 'М': 'M', 'Н': 'H', 'В': 'B'
 }
 
-# Настройки БД
+PREMIUM_EMOJIS = {
+    '🤩': '5244668080784691652',
+    '🥈': '5447203607294265305',
+}
+
+# Счётчик сообщений и настройки очистки
 MESSAGES_BEFORE_CLEANUP = 50000
+total_messages_sent = 0
+
+
+def build_premium_entities(text: str):
+    entities = []
+    offset = 0
+    for ch in text:
+        utf16_len = len(ch.encode('utf-16-le')) // 2
+        if ch in PREMIUM_EMOJIS:
+            entities.append(MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI,
+                offset=offset,
+                length=utf16_len,
+                custom_emoji_id=PREMIUM_EMOJIS[ch],
+            ))
+        offset += utf16_len
+    return entities
+
+
+def get_message_count():
+    """Получает текущее количество отправленных сообщений из БД"""
+    conn = sqlite3.connect('templates.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT value FROM stats WHERE key = "total_messages"')
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def increment_message_count():
+    """Увеличивает счётчик отправленных сообщений"""
+    global total_messages_sent
+    total_messages_sent += 1
+    conn = sqlite3.connect('templates.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO stats (key, value) VALUES ('total_messages', ?)
+        ON CONFLICT(key) DO UPDATE SET value = value + 1
+    ''', (total_messages_sent,))
+    conn.commit()
+    conn.close()
 
 def init_db():
     conn = sqlite3.connect('templates.db')
@@ -171,26 +212,12 @@ def init_db():
     conn.commit()
     conn.close()
 
-def get_message_count():
-    conn = sqlite3.connect('templates.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT value FROM stats WHERE key = "total_messages"')
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else 0
-
-def increment_message_count():
-    conn = sqlite3.connect('templates.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE stats SET value = value + 1 WHERE key = "total_messages"')
-    conn.commit()
-    conn.close()
-
 def clean_old_records():
+    """Очищает старые записи, оставляя только последние 1000 (чтобы БД не раздувалась)"""
     conn = sqlite3.connect('templates.db')
     cursor = conn.cursor()
     cursor.execute('''
-        DELETE FROM used_templates 
+        DELETE FROM used_templates
         WHERE id NOT IN (SELECT id FROM used_templates ORDER BY id DESC LIMIT 1000)
     ''')
     deleted = cursor.rowcount
@@ -200,9 +227,11 @@ def clean_old_records():
         print(f"🧹 Очищено {deleted} старых записей из БД")
 
 def check_and_cleanup():
+    """Проверяет счётчик и очищает БД каждые 50 000 сообщений"""
     msg_count = get_message_count()
     if msg_count >= MESSAGES_BEFORE_CLEANUP:
         clean_old_records()
+        # Сбрасываем счётчик
         conn = sqlite3.connect('templates.db')
         cursor = conn.cursor()
         cursor.execute('UPDATE stats SET value = 0 WHERE key = "total_messages"')
@@ -226,58 +255,59 @@ def save_used(template_text):
     conn.close()
 
 def obfuscate_text(text: str) -> str:
-    """50% вероятность замены, обходит ссылки на кастомные эмодзи"""
-    # Защищаем https://t.me/emoji/... от замены
-    parts = re.split(r'(https://t\.me/emoji/[0-9]+)', text)
-    result = []
-    for part in parts:
-        if part.startswith('https://t.me/emoji/'):
-            result.append(part)
-        else:
-            chars = list(part)
-            for i, ch in enumerate(chars):
-                if ch in REPLACEMENTS and random.random() < 0.5:
-                    chars[i] = REPLACEMENTS[ch]
-            result.append(''.join(chars))
-    return ''.join(result)
+    """50% вероятность замены для каждого символа"""
+    chars = list(text)
+    for i, ch in enumerate(chars):
+        if ch in REPLACEMENTS and random.random() < 0.5:
+            chars[i] = REPLACEMENTS[ch]
+    return ''.join(chars)
 
 def generate_unique_variant(original_template):
+    """Генерирует уникальный вариант, которого ещё не было в БД"""
     max_attempts = 100
     for _ in range(max_attempts):
         variant = obfuscate_text(original_template)
         if not is_used(variant):
             save_used(variant)
             return variant
+    # Если все варианты исчерпаны — возвращаем оригинал
     return original_template
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("Сгенерировать шаблоны 🗂️", callback_data="generate")]]
+    keyboard = [[InlineKeyboardButton("Сгенерировать шаблоны 🗂", callback_data="generate")]]
     await update.message.reply_text(
         "📬 Нажми кнопку для генерации уникальных шаблонов.\n\n"
-        "✅ 50% замена символов (а→a, е→e, о→o и т.д.)\n"
+        "✅ 50% замены символов\n"
         "✅ 117 синонимичных шаблонов\n"
-        "✅ Кастомные эмодзи из NewsEmoji (для премиум-пользователей)\n"
         "✅ Очистка БД каждые 50 000 сообщений\n"
         "✅ Одинаковые сообщения никогда не повторятся",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global total_messages_sent
     query = update.callback_query
     await query.answer()
-    
+
     for template in TEMPLATES:
         unique_variant = generate_unique_variant(template)
-        await query.message.reply_text(unique_variant)
+        entities = build_premium_entities(unique_variant)
+        await query.message.reply_text(unique_variant, entities=entities)
         increment_message_count()
-        check_and_cleanup()
+        total_messages_sent = get_message_count()
+        # Каждые 50 000 сообщений — очистка
+        if total_messages_sent % MESSAGES_BEFORE_CLEANUP == 0:
+            check_and_cleanup()
+
+    # Дополнительная проверка после полной генерации
+    check_and_cleanup()
 
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback, pattern="generate"))
-    print("✅ Бот запущен. Кастомные эмодзи через https://t.me/emoji/...")
+    print("✅ Бот запущен. Очистка БД каждые 50 000 сообщений.")
     app.run_polling()
 
 if __name__ == "__main__":
