@@ -1,8 +1,8 @@
 import random
 import sqlite3
 import re
-import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 TOKEN = "8255139931:AAFA2Bti_ERq1x1Z_QRyKsPK6IpXZ9bFi7U"
@@ -272,13 +272,10 @@ async def send_pack(chat_id, context, pack_number):
         msg5 = get_random_template(templates_group5)
         msg6 = get_random_template(templates_group6)
         
-        # Отправляем сообщение 5 с двумя фото
+        # Отправляем сообщение 5 с двумя фото (по отдельности)
         if PHOTO_ORDER_1 and PHOTO_ORDER_2:
-            media = [
-                InputMediaPhoto(media=PHOTO_ORDER_1, caption=msg5),
-                InputMediaPhoto(media=PHOTO_ORDER_2)
-            ]
-            await context.bot.send_media_group(chat_id=chat_id, media=media)
+            await context.bot.send_photo(chat_id=chat_id, photo=PHOTO_ORDER_1, caption=msg5)
+            await context.bot.send_photo(chat_id=chat_id, photo=PHOTO_ORDER_2)
         else:
             await context.bot.send_message(chat_id=chat_id, text=msg5)
         increment_message_count()
@@ -309,8 +306,10 @@ async def send_pack(chat_id, context, pack_number):
         increment_message_count()
         check_and_cleanup()
         
+        print(f"✅ Пак {pack_number} отправлен")
+        
     except Exception as e:
-        print(f"Ошибка при отправке пака {pack_number}: {e}")
+        print(f"❌ Ошибка при отправке пака {pack_number}: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("Сгенерировать шаблоны 🗂️", callback_data="generate")]]
@@ -364,7 +363,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback, pattern="generate"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ Бот запущен. Задержки убраны.")
+    print("✅ Бот запущен. Проверьте консоль на ошибки.")
     app.run_polling()
 
 if __name__ == "__main__":
