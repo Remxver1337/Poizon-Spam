@@ -1,14 +1,20 @@
 import random
 import sqlite3
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+import re
+import asyncio
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 TOKEN = "8255139931:AAFA2Bti_ERq1x1Z_QRyKsPK6IpXZ9bFi7U"
 
-# ========== 117 ШАБЛОНОВ (финальная версия без удалённых) ==========
+# ID фото (ваши file_id)
+PHOTO_PROMOCODE = "AgACAgIAAxkBAAFJmjVqBdB1zGDr8FOvOSthiJGwBquzcAAC0xtrG77OMUgWQmYbLC23LwEAAwIAA3kAAzsE"
+PHOTO_ORDER_1 = "AgACAgIAAxkBAAFJmjdqBdCh72hXPOCi18n7WR3_q3bbTQACAhdrGyztMUi1K8WOyeLHXwEAAwIAA3kAAzsE"
+PHOTO_ORDER_2 = "AgACAgIAAxkBAAFJmjlqBdDKiLdCZXC5BBd5ipBz_wRcugACAxdrGyztMUjcBRMvQUT06QEAAwIAA3gAAzsE"
+
+# ========== 117 ШАБЛОНОВ ==========
 TEMPLATES = [
-    # Шаблон 1 (18 вариантов, удалены 16 и 17)
+    # Шаблон 1 (18 вариантов)
     "Добрый вечер! Вы победили у нас @PoizonCountry в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
     "Добрый вечер! Вы выиграли у нас @PoizonCountry в конкурсе 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
     "Добрый вечер! Вы победили у нас @PoizonCountry в розыгрыше 07.02\n\n🥈- Egor Sobolev 🤩\n\nБесплатнaя доставкa бeз комиссии +25% скидка нa заказ",
@@ -72,7 +78,7 @@ TEMPLATES = [
     "Ок, пришлите, пожaлуйста, имя пользователя друга @.., пусть отпишет мне сейчас",
     "Ок, пришлите, пожaлуйста, какой тег у @.. Вашего друга, пусть отпишет мне сейчас",
 
-    # Шаблон 4 (19 вариантов, удалён 12)
+    # Шаблон 4 (19 вариантов)
     "Главное отправьте мне, пожалуйста, тег @.. того, кто оформит заказ по промокоду",
     "Главное пришлите мне, пожалуйста, тег @.. того, кто оформит заказ по промокоду",
     "Главное отправьте мне, пожалуйста, юзернейм @.. того, кто оформит заказ по промокоду",
@@ -144,53 +150,11 @@ REPLACEMENTS = {
     'К': 'K', 'М': 'M', 'Н': 'H', 'В': 'B'
 }
 
-PREMIUM_EMOJIS = {
-    '🤩': '5244668080784691652',
-    '🥈': '5447203607294265305',
-}
+# Хранение состояния пользователя: ожидает ввод количества паков
+user_waiting_for_packs = {}
 
-# Счётчик сообщений и настройки очистки
+# Настройки БД
 MESSAGES_BEFORE_CLEANUP = 50000
-total_messages_sent = 0
-
-
-def build_premium_entities(text: str):
-    entities = []
-    offset = 0
-    for ch in text:
-        utf16_len = len(ch.encode('utf-16-le')) // 2
-        if ch in PREMIUM_EMOJIS:
-            entities.append(MessageEntity(
-                type=MessageEntity.CUSTOM_EMOJI,
-                offset=offset,
-                length=utf16_len,
-                custom_emoji_id=PREMIUM_EMOJIS[ch],
-            ))
-        offset += utf16_len
-    return entities
-
-
-def get_message_count():
-    """Получает текущее количество отправленных сообщений из БД"""
-    conn = sqlite3.connect('templates.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT value FROM stats WHERE key = "total_messages"')
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else 0
-
-def increment_message_count():
-    """Увеличивает счётчик отправленных сообщений"""
-    global total_messages_sent
-    total_messages_sent += 1
-    conn = sqlite3.connect('templates.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO stats (key, value) VALUES ('total_messages', ?)
-        ON CONFLICT(key) DO UPDATE SET value = value + 1
-    ''', (total_messages_sent,))
-    conn.commit()
-    conn.close()
 
 def init_db():
     conn = sqlite3.connect('templates.db')
@@ -212,12 +176,26 @@ def init_db():
     conn.commit()
     conn.close()
 
+def get_message_count():
+    conn = sqlite3.connect('templates.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT value FROM stats WHERE key = "total_messages"')
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def increment_message_count():
+    conn = sqlite3.connect('templates.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE stats SET value = value + 1 WHERE key = "total_messages"')
+    conn.commit()
+    conn.close()
+
 def clean_old_records():
-    """Очищает старые записи, оставляя только последние 1000 (чтобы БД не раздувалась)"""
     conn = sqlite3.connect('templates.db')
     cursor = conn.cursor()
     cursor.execute('''
-        DELETE FROM used_templates
+        DELETE FROM used_templates 
         WHERE id NOT IN (SELECT id FROM used_templates ORDER BY id DESC LIMIT 1000)
     ''')
     deleted = cursor.rowcount
@@ -227,11 +205,9 @@ def clean_old_records():
         print(f"🧹 Очищено {deleted} старых записей из БД")
 
 def check_and_cleanup():
-    """Проверяет счётчик и очищает БД каждые 50 000 сообщений"""
     msg_count = get_message_count()
     if msg_count >= MESSAGES_BEFORE_CLEANUP:
         clean_old_records()
-        # Сбрасываем счётчик
         conn = sqlite3.connect('templates.db')
         cursor = conn.cursor()
         cursor.execute('UPDATE stats SET value = 0 WHERE key = "total_messages"')
@@ -270,14 +246,75 @@ def generate_unique_variant(original_template):
         if not is_used(variant):
             save_used(variant)
             return variant
-    # Если все варианты исчерпаны — возвращаем оригинал
     return original_template
 
+def get_random_template(template_group):
+    """Возвращает случайный уникальный вариант из группы шаблонов"""
+    idx = random.randint(0, len(template_group) - 1)
+    return generate_unique_variant(template_group[idx])
+
+async def send_pack(chat_id, context, pack_number):
+    """Отправляет один пак из 6 шаблонов с фото"""
+    # Группируем шаблоны по типам
+    templates_group1 = TEMPLATES[0:18]   # Шаблон 1 (поздравление)
+    templates_group2 = TEMPLATES[18:38]  # Шаблон 2 (тег вариант 1)
+    templates_group3 = TEMPLATES[38:58]  # Шаблон 3 (тег вариант 2)
+    templates_group4 = TEMPLATES[58:77]  # Шаблон 4 (тег вариант 3)
+    templates_group5 = TEMPLATES[77:97]  # Шаблон 5 (заказ прибыл) — с фото 2 и 3
+    templates_group6 = TEMPLATES[97:117] # Шаблон 6 (промокод) — с фото 1
+    
+    # Получаем уникальные варианты
+    msg1 = get_random_template(templates_group1)
+    msg2 = get_random_template(templates_group2)
+    msg3 = get_random_template(templates_group3)
+    msg4 = get_random_template(templates_group4)
+    msg5 = get_random_template(templates_group5)
+    msg6 = get_random_template(templates_group6)
+    
+    # Отправляем сообщение 5 (заказ прибыл) с двумя фото
+    if PHOTO_ORDER_1 and PHOTO_ORDER_2:
+        media = [
+            InputMediaPhoto(media=PHOTO_ORDER_1, caption=msg5),
+            InputMediaPhoto(media=PHOTO_ORDER_2)
+        ]
+        await context.bot.send_media_group(chat_id=chat_id, media=media)
+    else:
+        await context.bot.send_message(chat_id=chat_id, text=msg5)
+    
+    increment_message_count()
+    check_and_cleanup()
+    
+    # Отправляем сообщение 6 (промокод) с фото
+    if PHOTO_PROMOCODE:
+        await context.bot.send_photo(chat_id=chat_id, photo=PHOTO_PROMOCODE, caption=msg6)
+    else:
+        await context.bot.send_message(chat_id=chat_id, text=msg6)
+    
+    increment_message_count()
+    check_and_cleanup()
+    
+    # Отправляем остальные сообщения (без фото)
+    await context.bot.send_message(chat_id=chat_id, text=msg1)
+    increment_message_count()
+    check_and_cleanup()
+    
+    await context.bot.send_message(chat_id=chat_id, text=msg2)
+    increment_message_count()
+    check_and_cleanup()
+    
+    await context.bot.send_message(chat_id=chat_id, text=msg3)
+    increment_message_count()
+    check_and_cleanup()
+    
+    await context.bot.send_message(chat_id=chat_id, text=msg4)
+    increment_message_count()
+    check_and_cleanup()
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("Сгенерировать шаблоны 🗂", callback_data="generate")]]
+    keyboard = [[InlineKeyboardButton("Сгенерировать шаблоны 🗂️", callback_data="generate")]]
     await update.message.reply_text(
         "📬 Нажми кнопку для генерации уникальных шаблонов.\n\n"
-        "✅ 50% замены символов\n"
+        "✅ 50% замена символов (а→a, е→e, о→o и т.д.)\n"
         "✅ 117 синонимичных шаблонов\n"
         "✅ Очистка БД каждые 50 000 сообщений\n"
         "✅ Одинаковые сообщения никогда не повторятся",
@@ -285,30 +322,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global total_messages_sent
     query = update.callback_query
     await query.answer()
+    
+    user_id = query.from_user.id
+    user_waiting_for_packs[user_id] = True
+    
+    await query.message.reply_text(
+        "📦 Сколько паков шаблонов хотите создать?\n\n"
+        "1 пак = 6 сообщений (все шаблоны по одному разу)\n\n"
+        "Просто напишите число:"
+    )
 
-    for template in TEMPLATES:
-        unique_variant = generate_unique_variant(template)
-        entities = build_premium_entities(unique_variant)
-        await query.message.reply_text(unique_variant, entities=entities)
-        increment_message_count()
-        total_messages_sent = get_message_count()
-        # Каждые 50 000 сообщений — очистка
-        if total_messages_sent % MESSAGES_BEFORE_CLEANUP == 0:
-            check_and_cleanup()
-
-    # Дополнительная проверка после полной генерации
-    check_and_cleanup()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_waiting_for_packs.get(user_id):
+        try:
+            num_packs = int(update.message.text.strip())
+            if num_packs <= 0:
+                await update.message.reply_text("❌ Введите число больше 0")
+                return
+            
+            user_waiting_for_packs[user_id] = False
+            
+            await update.message.reply_text(f"✅ Начинаю генерацию {num_packs} паков...")
+            
+            for i in range(num_packs):
+                await send_pack(update.effective_chat.id, context, i + 1)
+                # Небольшая задержка между паками
+                if i < num_packs - 1:
+                    await asyncio.sleep(0.5)
+            
+            await update.message.reply_text(f"✅ Готово! Создано {num_packs} паков.")
+            
+        except ValueError:
+            await update.message.reply_text("❌ Введите число (например: 5)")
 
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback, pattern="generate"))
-    print("✅ Бот запущен. Очистка БД каждые 50 000 сообщений.")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    print("✅ Бот запущен. Без лимита на количество паков. Фото загружены.")
     app.run_polling()
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__"
